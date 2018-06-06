@@ -57,7 +57,7 @@ recog_model=acc.best # set a model to be used for decoding: 'acc.best' or 'loss.
 
 # data
 voxforge=downloads # original data directory to be stored
-lang=it # de, en, es, fr, it, nl, pt, ru
+lang=pt # de, en, es, fr, it, nl, pt, ru
 
 # exp tag
 tag="" # tag for managing experiments.

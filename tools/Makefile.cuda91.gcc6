@@ -1,6 +1,6 @@
 .PHONY: all clean
 
-all: venv/bin/activate kaldi nkf kaldi-io-for-python venv/lib/python2.7/site-packages/torch warp-ctc chainer_ctc subword-nmt
+all: venv/bin/activate nkf kaldi-io-for-python venv/lib/python2.7/site-packages/torch warp-ctc chainer_ctc subword-nmt
 
 kaldi-io-for-python:
 	git clone https://github.com/vesis84/kaldi-io-for-python.git

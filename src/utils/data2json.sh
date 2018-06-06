@@ -33,9 +33,13 @@ fi
 if [ ! -z ${bpecode} ]; then
     paste -d " " <(awk '{print $1}' ${dir}/text) <(cut -f 2- -d" " ${dir}/text | apply_bpe.py -c ${bpecode}) > ${tmpdir}/token.scp
 elif [ ! -z ${nlsyms} ]; then
-    text2token.py -s 1 -n 1 -l ${nlsyms} ${dir}/text > ${tmpdir}/token.scp
+    text2token.py -s 1 -n 1 -l ${nlsyms} ${dir}/text \
+    | awk '{printf("%s ", $1); $1="<s>"; $(NF+1)="</s>"; for (i=2; i<NF; i++) printf("%s-%s-%s ", $(i-1), $i, $(i+1)); print""}' \
+    > ${tmpdir}/token.scp
 else
-    text2token.py -s 1 -n 1 ${dir}/text > ${tmpdir}/token.scp
+    text2token.py -s 1 -n 1 ${dir}/text \
+    | awk '{printf("%s ", $1); $1="<s>"; $(NF+1)="</s>"; for (i=2; i<NF; i++) printf("%s-%s-%s ", $(i-1), $i, $(i+1)); print""}' \
+    > ${tmpdir}/token.scp
 fi
 cat ${tmpdir}/token.scp | utils/sym2int.pl --map-oov ${oov} -f 2- ${dic} > ${tmpdir}/tokenid.scp
 cat ${tmpdir}/tokenid.scp | awk '{print $1 " " NF-1}' > ${tmpdir}/olen.scp 
@@ -55,4 +59,4 @@ for x in ${dir}/text ${dir}/utt2spk ${tmpdir}/*.scp; do
     cat ${x} | scp2json.py --key ${k} > ${tmpdir}/${k}.json
 done
 mergejson.py ${tmpdir}/*.json 
-rm -fr ${tmpdir}
+#rm -fr ${tmpdir}
