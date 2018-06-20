@@ -2131,7 +2131,7 @@ class VGG2L(torch.nn.Module):
         # xs = F.pad_sequence(xs)
 
         # x: utt x 1 (input channel num) x frame x dim
-        xs = xs.view(xs.size(0), xs.size(1), self.in_channel,
+        xs = xs.contiguous().view(xs.size(0), xs.size(1), self.in_channel,
                      xs.size(2) // self.in_channel).transpose(1, 2)
 
         # NOTE: max_pool1d ?

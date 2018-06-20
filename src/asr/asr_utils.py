@@ -16,9 +16,11 @@ from chainer.training import extension
 import kaldi_io_py
 
 # matplotlib related
+import numpy
 import matplotlib
 matplotlib.use('Agg')
 
+numpy.set_printoptions(threshold='nan')
 
 # * -------------------- training iterator related -------------------- *
 def make_batchset(data, batch_size, max_length_in, max_length_out, num_batches=0):
@@ -164,16 +166,27 @@ class PlotAttentionReport(extension.Extension):
 
     def __call__(self, trainer):
         att_ws = self.att_vis_fn(self.data)
+        txt_filename = "%s/ep.{.updater.epoch}.txt" % (self.outdir)
+        f = open(txt_filename.format(trainer), 'w')
         for idx, att_w in enumerate(att_ws):
+            print ("computing alignment", idx)
             filename = "%s/%s.ep.{.updater.epoch}.png" % (
                 self.outdir, self.data[idx][0])
+
+#            numpy.savetxt(filename.format(trainer) + ".txt", att_w)
+
             if len(att_w.shape) == 3:
                 att_w = att_w[:, :int(self.data[idx][1]['output'][0]['shape'][0]),
                               :int(self.data[idx][1]['input'][0]['shape'][0])]
             else:
                 att_w = att_w[:int(self.data[idx][1]['output'][0]['shape'][0]),
                               :int(self.data[idx][1]['input'][0]['shape'][0])]
-            self._plot_and_save_attention(att_w, filename.format(trainer))
+            array_str = numpy.array2string(att_w)
+
+            f.write(self.data[idx][0] + "\n")
+            f.write(array_str + "\n")
+#            self._plot_and_save_attention(att_w, filename.format(trainer))
+#         f.close()
 
     def _plot_and_save_attention(self, att_w, filename):
         if len(att_w.shape) == 3:

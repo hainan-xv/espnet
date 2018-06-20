@@ -7,7 +7,7 @@
 . ./cmd.sh
 
 # general configuration
-backend=chainer
+backend=pytorch
 stage=0        # start from 0 if you need to start from data preparation
 gpu=            # will be deprecated, please use ngpu
 ngpu=0          # number of gpus ("0" uses cpu, otherwise use gpu)
@@ -190,6 +190,7 @@ if [ ${stage} -le 3 ]; then
     if [ ${ngpu} -gt 1 ]; then
         echo "LM training does not support multi-gpu. signle gpu will be used."
     fi
+    exit
     ${cuda_cmd} ${lmexpdir}/train.log \
         lm_train.py \
         --ngpu ${ngpu} \
@@ -290,7 +291,6 @@ if [ ${stage} -le 5 ]; then
             --maxlenratio ${maxlenratio} \
             --minlenratio ${minlenratio} \
             --ctc-weight ${ctc_weight} \
-            --rnnlm ${lmexpdir}/rnnlm.model.best \
             --lm-weight ${lm_weight} &
         wait
 

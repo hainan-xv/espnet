@@ -206,6 +206,7 @@ if [ ${stage} -le 3 ]; then
         --batch-size ${batchsize} \
         --maxlen-in ${maxlen_in} \
         --maxlen-out ${maxlen_out} \
+        --num-save-attention 999999999999 \
         --opt ${opt} \
         --epochs ${epochs}
 fi
