@@ -224,10 +224,12 @@ def train(args):
         for i in range(args.bproplen):
             # Get the next batch (a list of tuples of two word IDs)
             batch = train_iter.__next__()
+            print ("original batch is", batch)
             # Concatenate the word IDs to matrices and send them to the device
             # self.converter does this job
             # (it is chainer.dataset.concat_examples by default)
             batch = np.array(batch)
+            print (batch)
             x = Variable(torch.from_numpy(batch[:, 0]).long())
             t = Variable(torch.from_numpy(batch[:, 1]).long())
             if args.ngpu > 0:
