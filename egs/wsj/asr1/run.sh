@@ -6,7 +6,7 @@
 . ./path.sh
 . ./cmd.sh
 
-silmodel=True
+silmodel=true
 
 # general configuration
 backend=pytorch
@@ -101,6 +101,14 @@ train_set=train_si84
 train_dev=test_dev93
 recog_set="test_dev93 test_eval92"
 
+affix=
+
+if $silmodel; then
+  affix=_sil
+else
+  affix=_nosil
+fi
+
 if [ ${stage} -le 0 ]; then
     ### Task dependent. You have to make data the following preparation part by yourself.
     ### But you can utilize Kaldi recipes in most cases
@@ -148,15 +156,20 @@ if [ ${stage} -le 1 ]; then
     done
 fi
 
+[ -d data/${train_set}$affix ] && rm data/${train_set}$affix -rf
+[ -d data/${train_dev}$affix ] && rm data/${train_dev}$affix -rf
+
+cp data/${train_set}/ data/${train_set}$affix -r
+cp data/${train_dev}/ data/${train_dev}$affix -r
 if $silmodel; then
-  cp pron.2.txt data/${train_set}/text
-  cp pron.2.txt data/${train_dev}/text
+  cp kaldi.txt data/${train_set}$affix/text
+  cp kaldi.txt data/${train_dev}$affix/text
 else
-  cat pron.2.txt | sed "s=@==g" > data/${train_set}/text
-  cat pron.2.txt | sed "s=@==g" > data/${train_dev}/text
+  cat kaldi.txt | sed "s=@==g" > data/${train_set}$affix/text
+  cat kaldi.txt | sed "s=@==g" > data/${train_dev}$affix/text
 fi
 
-dict=data/lang_1char/${train_set}_units.txt
+dict=data/lang_1char/${train_set}${affix}_units.txt
 nlsyms=data/lang_1char/non_lang_syms.txt
 
 echo "dictionary: ${dict}"
@@ -166,20 +179,20 @@ if [ ${stage} -le 2 ]; then
     mkdir -p data/lang_1char/
 
     echo "make a non-linguistic symbol list"
-    cut -f 2- data/${train_set}/text | tr " " "\n" | sort | uniq | grep "<" > ${nlsyms}
+    cut -f 2- data/${train_set}$affix/text | tr " " "\n" | sort | uniq | grep "<" > ${nlsyms}
     cat ${nlsyms}
 
     echo "make a dictionary"
     echo "<unk> 1" > ${dict} # <unk> must be 1, 0 will be used for "blank" in CTC
-    text2token.py -s 1 -n 1 -l ${nlsyms} data/${train_set}/text | cut -f 2- -d" " | tr " " "\n" \
+    text2token.py -s 1 -n 1 -l ${nlsyms} data/${train_set}$affix/text | cut -f 2- -d" " | tr " " "\n" \
     | sort | uniq | grep -v -e '^\s*$' | awk '{print $0 " " NR+1}' >> ${dict}
     wc -l ${dict}
 
     echo "make json files"
     data2json.sh --feat ${feat_tr_dir}/feats.scp --nlsyms ${nlsyms} \
-         data/${train_set} ${dict} > ${feat_tr_dir}/data.json
+         data/${train_set}$affix ${dict} > ${feat_tr_dir}/data$affix.json
     data2json.sh --feat ${feat_dt_dir}/feats.scp --nlsyms ${nlsyms} \
-         data/${train_dev} ${dict} > ${feat_dt_dir}/data.json
+         data/${train_dev}$affix ${dict} > ${feat_dt_dir}/data$affix.json
 fi
 
 # # It takes a few days. If you just want to end-to-end ASR without LM,
@@ -214,7 +227,7 @@ fi
 # fi
 
 if [ -z ${tag} ]; then
-    expdir=exp/${train_set}_${etype}_e${elayers}_subsample${subsample}_unit${eunits}_proj${eprojs}_d${dlayers}_unit${dunits}_${atype}_aconvc${aconv_chans}_aconvf${aconv_filts}_mtlalpha${mtlalpha}_${opt}_bs${batchsize}_mli${maxlen_in}_mlo${maxlen_out}
+    expdir=exp/${train_set}${affix}_${etype}_e${elayers}_subsample${subsample}_unit${eunits}_proj${eprojs}_d${dlayers}_unit${dunits}_${atype}_aconvc${aconv_chans}_aconvf${aconv_filts}_mtlalpha${mtlalpha}_${opt}_bs${batchsize}_mli${maxlen_in}_mlo${maxlen_out}
     if [ "${lsm_type}" != "" ]; then
         expdir=${expdir}_lsm${lsm_type}${lsm_weight}
     fi
@@ -222,7 +235,7 @@ if [ -z ${tag} ]; then
         expdir=${expdir}_delta
     fi
 else
-    expdir=exp/${train_set}_${tag}
+    expdir=exp/${train_set}${affix}_${tag}
 fi
 mkdir -p ${expdir}
 
@@ -241,8 +254,8 @@ if [ ${stage} -le 4 ]; then
         --verbose ${verbose} \
         --resume ${resume} \
         --seed ${seed} \
-        --train-json ${feat_tr_dir}/data.json \
-        --valid-json ${feat_dt_dir}/data.json \
+        --train-json ${feat_tr_dir}/data$affix.json \
+        --valid-json ${feat_dt_dir}/data$affix.json \
         --etype ${etype} \
         --elayers ${elayers} \
         --eunits ${eunits} \
