@@ -33,7 +33,8 @@ if $remove_blank; then
 fi
 
 cp  ${dir}/hyp.trn  ${dir}/hyp.trn2
-cat  ${dir}/hyp.trn2 | sed "s=@ <space>= =g" | sed "s=<space> @= =g" >  ${dir}/hyp.trn
+#cat  ${dir}/hyp.trn2 | sed "s=@ <space>= =g" | sed "s=<space> @= =g" >  ${dir}/hyp.trn
+cat  ${dir}/hyp.trn2 | sed "s=^@==g" | sed "s=@  (=(=g" | sed "s=@=<space>=g" | sed "s=<space> @= =g" >  ${dir}/hyp.trn
 
 if [ ! -z ${nlsyms} ]; then
     cp ${dir}/ref.trn ${dir}/ref.trn.org

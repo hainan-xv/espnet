@@ -43,7 +43,11 @@ elif [ ! -z ${nlsyms} ]; then
 else
     text2token.py -s 1 -n 1 ${dir}/text > ${tmpdir}/token.scp
 fi
-cat ${tmpdir}/token.scp | utils/sym2int.pl --map-oov ${oov} -f 2- ${dic} > ${tmpdir}/tokenid.scp
+
+cp ${tmpdir}/token.scp ${tmpdir}/token.scp2
+
+cat ${tmpdir}/token.scp2 | sed "s=@ <space>=@ =g" | sed "s=<space> @= @=g" > ${tmpdir}/token.scp
+cat ${tmpdir}/token.scp | sed "s=@ <space>=@ =g" | sed "s=<space> @= @=g" | utils/sym2int.pl --map-oov ${oov} -f 2- ${dic} > ${tmpdir}/tokenid.scp
 cat ${tmpdir}/tokenid.scp | awk '{print $1 " " NF-1}' > ${tmpdir}/olen.scp 
 # +2 comes from CTC blank and EOS
 vocsize=`tail -n 1 ${dic} | awk '{print $2}'`
