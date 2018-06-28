@@ -28,6 +28,11 @@ json2trn.py ${dir}/data.json ${dic} ${dir}/ref.trn ${dir}/hyp.trn
 if $remove_blank; then
     sed -i.bak2 -r 's/<blank> //g' ${dir}/hyp.trn
 fi
+
+cp  ${dir}/hyp.trn  ${dir}/hyp.trn2
+cat  ${dir}/hyp.trn2 | sed "s=^@==g" | sed "s=@  (=(=g" | sed "s=@=<space>=g" |\
+     sed "s=<space> @= =g" | sed "s=<space> (=(=g" | sed "s=<space> <space>=<space>=g" | sed "s=<space> <space>=<space>=g" |\
+     sed "s=^ <space> ==g" > ${dir}/hyp.trn
 if [ ! -z ${nlsyms} ]; then
     cp ${dir}/ref.trn ${dir}/ref.trn.org
     cp ${dir}/hyp.trn ${dir}/hyp.trn.org
