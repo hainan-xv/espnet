@@ -196,12 +196,16 @@ class E2E(torch.nn.Module):
         # ctc
         self.ctc = CTC(odim, args.eprojs, args.dropout_rate)
         # attention
+
         if args.atype == 'noatt':
             self.att = NoAtt()
         elif args.atype == 'dot':
             self.att = AttDot(args.eprojs, args.dunits, args.adim)
         elif args.atype == 'add':
             self.att = AttAdd(args.eprojs, args.dunits, args.adim)
+        elif args.atype == 'locationkv':
+            self.att = AttLocKeyValue(args.eprojs, args.dunits,
+                              args.adim, args.aconv_chans, args.aconv_filts)
         elif args.atype == 'location':
             self.att = AttLoc(args.eprojs, args.dunits,
                               args.adim, args.aconv_chans, args.aconv_filts)
@@ -675,6 +679,103 @@ class AttAdd(torch.nn.Module):
 
         return c, w
 
+class AttLocKeyValue(torch.nn.Module):
+    '''location-aware attention
+
+    Reference: Attention-Based Models for Speech Recognition
+        (https://arxiv.org/pdf/1506.07503.pdf)
+
+    :param int eprojs: # projection-units of encoder
+    :param int dunits: # units of decoder
+    :param int att_dim: attention dimension
+    :param int aconv_chans: # channels of attention convolution
+    :param int aconv_filts: filter size of attention convolution
+    '''
+
+    def __init__(self, eprojs, dunits, att_dim, aconv_chans, aconv_filts):
+        super(AttLocKeyValue, self).__init__()
+
+        self.mlp_enc = torch.nn.Linear(eprojs, att_dim + int(att_dim / 2))
+        self.mlp_dec = torch.nn.Linear(dunits, int(att_dim - att_dim / 2), bias=False)
+        self.mlp_att = torch.nn.Linear(aconv_chans, int(att_dim / 2), bias=False)
+        self.loc_conv = torch.nn.Conv2d(
+            1, aconv_chans, (1, 2 * aconv_filts + 1), padding=(0, aconv_filts), bias=False)
+        self.gvec = torch.nn.Linear(att_dim - int(att_dim / 2), 1)
+
+        self.dunits = dunits
+        self.eprojs = eprojs
+        self.att_dim = att_dim
+        self.h_length = None
+        self.enc_h = None
+        self.pre_compute_enc_h = None
+        self.aconv_chans = aconv_chans
+
+    def reset(self):
+        '''reset states'''
+        self.h_length = None
+        self.enc_h = None
+        self.pre_compute_enc_h = None
+
+    def forward(self, enc_hs_pad, enc_hs_len, dec_z, att_prev, scaling=2.0):
+        '''AttLoc forward
+
+        :param Variable enc_hs_pad: padded encoder hidden state (B x T_max x D_enc)
+        :param list enc_h_len: padded encoder hidden state lenght (B)
+        :param Variable dec_z: docoder hidden state (B x D_dec)
+        :param Variable att_prev: previous attetion weight (B x T_max)
+        :param float scaling: scaling parameter before applying softmax
+        :return: attentioin weighted encoder state (B, D_enc)
+        :rtype: Variable
+        :return: previous attentioin weights (B x T_max)
+        :rtype: Variable
+        '''
+
+        batch = len(enc_hs_pad)
+        half_d_enc = int(enc_hs_pad.size(2) / 2)
+        # pre-compute all h outside the decoder loop
+        if self.pre_compute_enc_h is None:
+            self.enc_h = enc_hs_pad  # utt x frame x hdim
+            self.h_length = self.enc_h.size(1)
+            # utt x frame x att_dim
+            self.pre_compute_enc_h = linear_tensor(self.mlp_enc, self.enc_h)
+            self.keys   = self.pre_compute_enc_h[:,:,:int(self.eprojs/2)]
+            self.values = self.pre_compute_enc_h[:,:,int(self.eprojs/2):]
+
+        if dec_z is None:
+            dec_z = Variable(enc_hs_pad.data.new(batch, self.dunits).zero_())
+        else:
+            dec_z = dec_z.view(batch, self.dunits)
+
+        # initialize attention weight with uniform dist.
+        if att_prev is None:
+            att_prev = [Variable(enc_hs_pad.data.new(
+                int(l)).zero_() + (1.0 / int(l))) for l in enc_hs_len]
+            # if no bias, 0 0-pad goes 0
+            att_prev = pad_list(att_prev, 0)
+
+        # att_prev: utt x frame -> utt x 1 x 1 x frame -> utt x att_conv_chans x 1 x frame
+        att_conv = self.loc_conv(att_prev.view(batch, 1, 1, self.h_length))
+        # att_conv: utt x att_conv_chans x 1 x frame -> utt x frame x att_conv_chans
+        att_conv = att_conv.squeeze(2).transpose(1, 2)
+        # att_conv: utt x frame x att_conv_chans -> utt x frame x att_dim
+        att_conv = linear_tensor(self.mlp_att, att_conv)
+
+        # dec_z_tiled: utt x frame x att_dim
+        dec_z_tiled = self.mlp_dec(dec_z).view(batch, 1, int(self.att_dim/2))
+
+        # dot with gvec
+        # utt x frame x att_dim -> utt x frame
+        # NOTE consider zero padding when compute w.
+        e = linear_tensor(self.gvec, torch.tanh(
+            att_conv + self.keys + dec_z_tiled)).squeeze(2)
+        w = F.softmax(scaling * e, dim=1)
+
+        # weighted sum over flames
+        # utt x hdim
+        # NOTE use bmm instead of sum(*)
+        c = torch.sum(self.values * w.view(batch, self.h_length, 1), dim=1)
+
+        return c, w
 
 class AttLoc(torch.nn.Module):
     '''location-aware attention
