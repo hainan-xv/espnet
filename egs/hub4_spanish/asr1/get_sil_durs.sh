@@ -1,0 +1,1 @@
+../../wsj/asr1/get_sil_durs.sh

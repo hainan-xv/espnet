@@ -9,7 +9,6 @@ if [ $# -le 3 ]; then
    exit 1;
 fi
 
-
 dir=`pwd`/data/local/data
 lmdir=`pwd`/data/local/nist_lm
 mkdir -p $dir $lmdir

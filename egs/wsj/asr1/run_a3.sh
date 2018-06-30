@@ -40,7 +40,7 @@ aconv_chans=10
 aconv_filts=100
 
 # hybrid CTC/attention
-mtlalpha=0.5
+mtlalpha=0.2
 
 # label smoothing
 lsm_type=unigram
@@ -55,23 +55,34 @@ maxlen_out=150 # if output length > maxlen_out, batchsize is automatically reduc
 opt=adadelta
 epochs=15
 
+# rnnlm related
+lm_weight=1.0
+use_wordlm=false
+vocabsize=20000
+
 # decoding parameter
-beam_size=20
-nbest=1
+beam_size=30
 penalty=0.0
 maxlenratio=0.0
 minlenratio=0.0
-ctc_weight=0.1
+ctc_weight=0.3
 recog_model=acc.best # set a model to be used for decoding: 'acc.best' or 'loss.best'
+
+# data
+wsj0=/export/corpora5/LDC/LDC93S6B
+wsj1=/export/corpora5/LDC/LDC94S13B
+
+# exp tag
+tag="" # tag for managing experiments.
 
 sil=true
 file=kaldi.txt
 extra_affix=
 
-# exp tag
-tag="" # tag for managing experiments.
-
 . utils/parse_options.sh || exit 1;
+
+#. ./path.sh
+#. ./cmd.sh
 
 # check gpu option usage
 if [ ! -z $gpu ]; then
@@ -90,15 +101,10 @@ set -e
 set -u
 set -o pipefail
 
-train_set=train
-train_dev=dev
-recog_set="eval"
-
-# data
-audio_data=/export/corpora/LDC/LDC98S74
-transcript_data=/export/corpora/LDC/LDC98T29
-eval_data=/export/corpora/LDC/LDC2001S91
-dev_list=dev.list
+train_set=train_si284
+#train_set=train_si84
+train_dev=test_dev93
+recog_set="test_dev93 test_eval92"
 
 affix=
 if $sil; then
@@ -107,50 +113,27 @@ else
   affix=_nosil
 fi
 
-if [ $stage -le 0 ]; then
-  # Eval dataset preparation
-  # prepare_data.sh does not really care about the order or number of the
-  # corpus directories
-  local/prepare_data.sh \
-    $eval_data/HUB4_1997NE/doc/h4ne97sp.sgm \
-    $eval_data/HUB4_1997NE/h4ne_sp/h4ne97sp.sph data/eval
-  local/prepare_test_text.pl \
-    "<unk>" data/eval/text > data/eval/text.clean
-  mv data/eval/text data/eval/text.old
-  mv data/eval/text.clean data/eval/text
-  utils/fix_data_dir.sh data/eval
-
-  ## Training dataset preparation
-  local/prepare_data.sh $audio_data $transcript_data data/train
-  local/prepare_training_text.pl \
-    "<unk>" data/train/text > data/train/text.clean
-  mv data/train/text data/train/text.old
-  mv data/train/text.clean data/train/text
-  utils/fix_data_dir.sh data/train
-
-  # For generating the dev set. Use provided utterance list otherwise
-  # num_dev=$(cat data/eval/segments | wc -l)
-  # ./utils/subset_data_dir.sh data/train ${num_dev} data/dev
-
-  ./utils/subset_data_dir.sh --utt-list $dev_list data/train data/dev
-
-  mv data/train data/train.tmp
-  mkdir -p data/train
-  awk '{print $1}' data/dev/segments | grep -vf - data/train.tmp/segments > data/train/uttlist.list
-  ./utils/subset_data_dir.sh --utt-list data/train/uttlist.list data/train.tmp data/train
+echo $0: Stage 0
+if [ ${stage} -le 0 ]; then
+    ### Task dependent. You have to make data the following preparation part by yourself.
+    ### But you can utilize Kaldi recipes in most cases
+    local/wsj_data_prep.sh ${wsj0}/??-{?,??}.? ${wsj1}/??-{?,??}.?
+    local/wsj_format_data.sh
 fi
 
 feat_tr_dir=${dumpdir}/${train_set}/delta${do_delta}; mkdir -p ${feat_tr_dir}
 feat_dt_dir=${dumpdir}/${train_dev}/delta${do_delta}; mkdir -p ${feat_dt_dir}
+echo $0: Stage 1
 if [ ${stage} -le 1 ]; then
     ### Task dependent. You have to design training and dev sets by yourself.
     ### But you can utilize Kaldi recipes in most cases
-    echo "stage 1: Feature Generation"
     fbankdir=fbank
     # Generate the fbank features; by default 80-dimensional fbanks with pitch on each frame
-    for x in ${train_set} ${train_dev} ${recog_set}; do
-        steps/make_fbank_pitch.sh --cmd "$train_cmd" --nj 50 data/${x} exp/make_fbank/${x} ${fbankdir}
+#    for x in train_si284 train_si84 test_dev93 test_eval92; do
+    for x in train_si84 test_dev93 test_eval92; do
+        steps/make_fbank_pitch.sh --cmd "$train_cmd" --nj 10 data/${x} exp/make_fbank/${x} ${fbankdir} &
     done
+    wait
 
     # compute global CMVN
     compute-cmvn-stats scp:data/${train_set}/feats.scp data/${train_set}/cmvn.ark
@@ -158,12 +141,12 @@ if [ ${stage} -le 1 ]; then
     # dump features for training
     if [[ $(hostname -f) == *.clsp.jhu.edu ]] && [ ! -d ${feat_tr_dir}/storage ]; then
     utils/create_split_dir.pl \
-        /export/b{10,11,12,13}/${USER}/espnet-data/egs/hub4_spanish/asr1/dump/${train_set}/delta${do_delta}/storage \
+        /export/b{10,11,12,13}/${USER}/espnet-data/egs/wsj/asr1/dump/${train_set}/delta${do_delta}/storage \
         ${feat_tr_dir}/storage
     fi
     if [[ $(hostname -f) == *.clsp.jhu.edu ]] && [ ! -d ${feat_dt_dir}/storage ]; then
     utils/create_split_dir.pl \
-        /export/b{10,11,12,13}/${USER}/espnet-data/egs/hub4_spanish/asr1/dump/${train_dev}/delta${do_delta}/storage \
+        /export/b{10,11,12,13}/${USER}/espnet-data/egs/wsj/asr1/dump/${train_dev}/delta${do_delta}/storage \
         ${feat_dt_dir}/storage
     fi
     dump.sh --cmd "$train_cmd" --nj 32 --do_delta $do_delta \
@@ -179,7 +162,7 @@ if [ ${stage} -le 1 ]; then
 fi
 
 dict=data/lang_1char/${train_set}${affix}_units.txt
-nlsyms=data/lang_1char/non_lang_syms$affix.txt
+nlsyms=data/lang_1char/non_lang_syms${affix}.txt
 
 echo "dictionary: ${dict}"
 if [ ${stage} -le 2 ]; then
@@ -191,6 +174,8 @@ if [ ${stage} -le 2 ]; then
     
     cp data/${train_set}/ data/${train_set}$affix -r
     cp data/${train_dev}/ data/${train_dev}$affix -r
+
+# kaldi.txt is sil-aligned text file for train and dev
 
     if $sil; then
       cp $file data/${train_set}$affix/text
@@ -208,8 +193,9 @@ if [ ${stage} -le 2 ]; then
 
     echo "make a dictionary"
     echo "<unk> 1" > ${dict} # <unk> must be 1, 0 will be used for "blank" in CTC
-    text2token.py -s 1 -n 1 -l ${nlsyms} data/${train_set}${affix}/text | cut -f 2- -d" " | tr " " "\n" \
-    | sort | uniq | grep -v -e '^\s*$' | awk '{print $0 " " NR+1}' >> ${dict}
+#    text2token.py -s 1 -n 1 -l ${nlsyms} data/${train_set}${affix}/text | cut -f 2- -d" " | tr " " "\n" \
+#    | sort | uniq | grep -v -e '^\s*$' | awk '{print $0 " " NR+1}' >> ${dict}
+    cat cluster.list.txt > ${dict}
     wc -l ${dict}
 
     echo "make json files"
@@ -224,6 +210,57 @@ if [ ${stage} -le 2 ]; then
     done
 fi
 
+# # It takes a few days. If you just want to end-to-end ASR without LM,
+# # you can skip this and remove --rnnlm option in the recognition (stage 5)
+# if [ $use_wordlm = true ]; then
+#     lmdatadir=data/local/wordlm_train
+#     lm_batchsize=256
+#     lmexpdir=exp/train_rnnlm_word_2layer_bs${lm_batchsize}
+#     lmdict=${lmexpdir}/wordlist_${vocabsize}.txt
+# else
+#     lmdatadir=data/local/lm_train
+#     lm_batchsize=2048
+#     lmexpdir=exp/train_rnnlm_2layer_bs${lm_batchsize}
+#     lmdict=$dict
+# fi
+# mkdir -p ${lmexpdir}
+# if [ ${stage} -le 3 ]; then
+#     echo "stage 3: LM Preparation"
+#     mkdir -p ${lmdatadir}
+#     if [ $use_wordlm = true ]; then
+#         cat data/${train_set}/text | cut -f 2- -d" " | perl -pe 's/\n/ <eos> /g' \
+#             > ${lmdatadir}/train_trans.txt
+#         zcat ${wsj1}/13-32.1/wsj1/doc/lng_modl/lm_train/np_data/{87,88,89}/*.z | grep -v "<" | tr [a-z] [A-Z] \
+#             | perl -pe 's/\n/ <eos> /g' > ${lmdatadir}/train_others.txt
+#         cat ${lmdatadir}/train_trans.txt ${lmdatadir}/train_others.txt | tr '\n' ' ' > ${lmdatadir}/train.txt
+#         cat data/${train_dev}/text | cut -f 2- -d" " | perl -pe 's/\n/ <eos> /g' \
+#             > ${lmdatadir}/valid.txt
+#         text2vocabulary.py -s ${vocabsize} -o ${lmdict} ${lmdatadir}/train.txt
+#     else
+#         text2token.py -s 1 -n 1 -l ${nlsyms} data/${train_set}/text | cut -f 2- -d" " | perl -pe 's/\n/ <eos> /g' \
+#             > ${lmdatadir}/train_trans.txt
+#         zcat ${wsj1}/13-32.1/wsj1/doc/lng_modl/lm_train/np_data/{87,88,89}/*.z | grep -v "<" | tr [a-z] [A-Z] \
+#             | text2token.py -n 1 | cut -f 2- -d" " | perl -pe 's/\n/ <eos> /g' >> ${lmdatadir}/train_others.txt
+#         cat ${lmdatadir}/train_trans.txt ${lmdatadir}/train_others.txt | tr '\n' ' ' > ${lmdatadir}/train.txt
+#         text2token.py -s 1 -n 1 -l ${nlsyms} data/${train_dev}/text | cut -f 2- -d" " | perl -pe 's/\n/ <eos> /g' \
+#             > ${lmdatadir}/valid.txt
+#     fi
+#     # use only 1 gpu
+#     if [ ${ngpu} -gt 1 ]; then
+#         echo "LM training does not support multi-gpu. signle gpu will be used."
+#     fi
+#     ${cuda_cmd} ${lmexpdir}/train.log \
+#         lm_train.py \
+#         --ngpu ${ngpu} \
+#         --backend ${backend} \
+#         --verbose 1 \
+#         --outdir ${lmexpdir} \
+#         --train-label ${lmdatadir}/train.txt \
+#         --valid-label ${lmdatadir}/valid.txt \
+#         --batchsize ${lm_batchsize} \
+#         --dict ${lmdict}
+# fi
+
 if [ -z ${tag} ]; then
     expdir=exp/${train_set}${affix}_${etype}_e${elayers}_subsample${subsample}_unit${eunits}_proj${eprojs}_d${dlayers}_unit${dunits}_${atype}_aconvc${aconv_chans}_aconvf${aconv_filts}_mtlalpha${mtlalpha}_${opt}_bs${batchsize}_mli${maxlen_in}_mlo${maxlen_out}
     if [ "${lsm_type}" != "" ]; then
@@ -237,8 +274,8 @@ else
 fi
 mkdir -p ${expdir}
 
-if [ ${stage} -le 3 ]; then
-    echo "stage 3: Network Training"
+if [ ${stage} -le 4 ]; then
+    echo "stage 4: Network Training"
 
     ${cuda_cmd} --gpu ${ngpu} ${expdir}/train.log \
         asr_train.py \
@@ -277,17 +314,24 @@ if [ ${stage} -le 3 ]; then
         --epochs ${epochs}
 fi
 
-if [ ${stage} -le 4 ]; then
-    echo "stage 4: Decoding"
+if [ ${stage} -le 5 ]; then
+    echo "stage 5: Decoding"
     nj=32
 
-    for rtask in ${recog_set} ${train_dev}; do
+    for rtask in ${recog_set}; do
     (
         decode_dir=decode_${rtask}_beam${beam_size}_e${recog_model}_p${penalty}_len${minlenratio}-${maxlenratio}_ctcw${ctc_weight}
+        if [ $use_wordlm = true ]; then
+            decode_dir=${decode_dir}_wordrnnlm${lm_weight}
+#            recog_opts="--word-rnnlm ${lmexpdir}/rnnlm.model.best --word-dict ${lmdict}"
+        else
+            decode_dir=${decode_dir}_rnnlm${lm_weight}
+#            recog_opts="--rnnlm ${lmexpdir}/rnnlm.model.best"
+        fi
         feat_recog_dir=${dumpdir}/${rtask}/delta${do_delta}
 
         # split data
-        splitjson.py --parts ${nj} ${feat_recog_dir}/data$affix.json 
+        splitjson.py --parts ${nj} ${feat_recog_dir}/data$affix.json
 
         #### use CPU for decoding
         ngpu=0
@@ -301,11 +345,12 @@ if [ ${stage} -le 4 ]; then
             --model ${expdir}/results/model.${recog_model}  \
             --model-conf ${expdir}/results/model.conf  \
             --beam-size ${beam_size} \
-            --nbest ${nbest} \
             --penalty ${penalty} \
             --maxlenratio ${maxlenratio} \
             --minlenratio ${minlenratio} \
-            --ctc-weight ${ctc_weight} &
+            --ctc-weight ${ctc_weight} \
+            --lm-weight ${lm_weight} \
+#            $recog_opts &
         wait
 
         score_sclite.sh --wer true --nlsyms ${nlsyms} ${expdir}/${decode_dir} ${dict}
@@ -315,7 +360,4 @@ if [ ${stage} -le 4 ]; then
     wait
     echo "Finished"
 fi
-
-
-
 

@@ -1,0 +1,1 @@
+../../wsj/asr1/sil_durs_to_sil_trans.py

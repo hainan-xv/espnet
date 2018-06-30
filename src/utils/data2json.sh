@@ -39,7 +39,13 @@ fi
 if [ ! -z ${bpecode} ]; then
     paste -d " " <(awk '{print $1}' ${dir}/text) <(cut -f 2- -d" " ${dir}/text | spm_encode --model=${bpecode} --output_format=piece) > ${tmpdir}/token.scp
 elif [ ! -z ${nlsyms} ]; then
-    text2token.py -s 1 -n 1 -l ${nlsyms} ${dir}/text > ${tmpdir}/token.scp
+#    text2token.py -s 1 -n 1 -l ${nlsyms} ${dir}/text > ${tmpdir}/token.scp
+    text2token.py -s 1 -n 1 -l ${nlsyms} ${dir}/text > ${tmpdir}/token.scp2
+    cat ${tmpdir}/token.scp2 | sed "s=@ 1=@1=g" | sed "s=@ 2=@2=g" | sed "s=@ 0=@0=g" \
+    | sed "s=@ 3=@3=g" | sed "s=@ 4=@4=g" | sed "s=@ 5=@5=g" \
+    | sed "s=@ <space>=@=g" | sed "s=<space> @=@=g" \
+    | sed "s=@1 <space>=@1=g" | sed "s=@2 <space>=@2=g" | sed "s=@0 <space>=@0=g" \
+    | sed "s=@3 <space>=@1=g" | sed "s=@4 <space>=@2=g" > ${tmpdir}/token.scp
 else
     text2token.py -s 1 -n 1 ${dir}/text > ${tmpdir}/token.scp
 fi

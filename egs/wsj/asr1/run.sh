@@ -7,7 +7,7 @@
 . ./cmd.sh
 
 # general configuration
-backend=chainer
+backend=pytorch
 stage=0        # start from 0 if you need to start from data preparation
 gpu=            # will be deprecated, please use ngpu
 ngpu=1          # number of gpus ("0" uses cpu, otherwise use gpu)
@@ -23,7 +23,7 @@ do_delta=false # true when using CNN
 
 # network archtecture
 # encoder related
-etype=vggblstmp     # encoder architecture type
+etype=blstmp     # encoder architecture type
 elayers=6
 eunits=320
 eprojs=320
@@ -57,7 +57,7 @@ epochs=15
 
 # rnnlm related
 lm_weight=1.0
-use_wordlm=true
+use_wordlm=false
 vocabsize=20000
 
 # decoding parameter
@@ -76,6 +76,8 @@ wsj1=/export/corpora5/LDC/LDC94S13B
 tag="" # tag for managing experiments.
 
 sil=true
+file=kaldi.txt
+extra_affix=
 
 . utils/parse_options.sh || exit 1;
 
@@ -100,14 +102,14 @@ set -u
 set -o pipefail
 
 train_set=train_si284
-train_set=train_si84
+#train_set=train_si84
 train_dev=test_dev93
 recog_set="test_dev93 test_eval92"
+#recog_set="test_eval92"
 
 affix=
-
 if $sil; then
-  affix=_sil
+  affix=_sil$extra_affix
 else
   affix=_nosil
 fi
@@ -129,7 +131,7 @@ if [ ${stage} -le 1 ]; then
     fbankdir=fbank
     # Generate the fbank features; by default 80-dimensional fbanks with pitch on each frame
 #    for x in train_si284 train_si84 test_dev93 test_eval92; do
-    for x in train_si84 test_dev93 test_eval92; do
+    for x in train_si284 train_si84 test_dev93 test_eval92; do
         steps/make_fbank_pitch.sh --cmd "$train_cmd" --nj 10 data/${x} exp/make_fbank/${x} ${fbankdir} &
     done
     wait
@@ -160,8 +162,8 @@ if [ ${stage} -le 1 ]; then
     done
 fi
 
-dict=data/lang_1char/${train_set}_units.txt
-nlsyms=data/lang_1char/non_lang_syms.txt
+dict=data/lang_1char/${train_set}${affix}_units.txt
+nlsyms=data/lang_1char/non_lang_syms${affix}.txt
 
 echo "dictionary: ${dict}"
 if [ ${stage} -le 2 ]; then
@@ -177,11 +179,11 @@ if [ ${stage} -le 2 ]; then
 # kaldi.txt is sil-aligned text file for train and dev
 
     if $sil; then
-      cp kaldi.txt data/${train_set}$affix/text
-      cp kaldi.txt data/${train_dev}$affix/text
+      cp $file data/${train_set}$affix/text
+      cp $file data/${train_dev}$affix/text
     else
-      cat kaldi.txt | sed "s=@==g" > data/${train_set}$affix/text
-      cat kaldi.txt | sed "s=@==g" > data/${train_dev}$affix/text
+      cat $file | sed "s=@==g" > data/${train_set}$affix/text
+      cat $file | sed "s=@==g" > data/${train_dev}$affix/text
     fi
 
     mkdir -p data/lang_1char/
@@ -198,13 +200,13 @@ if [ ${stage} -le 2 ]; then
 
     echo "make json files"
     data2json.sh --feat ${feat_tr_dir}/feats.scp --nlsyms ${nlsyms} \
-         data/${train_set}${affix} ${dict} > ${feat_tr_dir}/data.json${affix}
+         data/${train_set}${affix} ${dict} > ${feat_tr_dir}/data$affix.json
     data2json.sh --feat ${feat_dt_dir}/feats.scp --nlsyms ${nlsyms} \
-         data/${train_dev}${affix} ${dict} > ${feat_dt_dir}/data.json${affix}
+         data/${train_dev}${affix} ${dict} > ${feat_dt_dir}/data$affix.json
     for rtask in ${recog_set}; do
         feat_recog_dir=${dumpdir}/${rtask}/delta${do_delta}
         data2json.sh --feat ${feat_recog_dir}/feats.scp \
-            --nlsyms ${nlsyms} data/${rtask} ${dict} > ${feat_recog_dir}/data.json
+            --nlsyms ${nlsyms} data/${rtask} ${dict} > ${feat_recog_dir}/data$affix.json
     done
 fi
 
@@ -287,8 +289,8 @@ if [ ${stage} -le 4 ]; then
         --verbose ${verbose} \
         --resume ${resume} \
         --seed ${seed} \
-        --train-json ${feat_tr_dir}/data.json${affix} \
-        --valid-json ${feat_dt_dir}/data.json${affix} \
+        --train-json ${feat_tr_dir}/data$affix.json \
+        --valid-json ${feat_dt_dir}/data$affix.json \
         --etype ${etype} \
         --elayers ${elayers} \
         --eunits ${eunits} \
@@ -329,26 +331,27 @@ if [ ${stage} -le 5 ]; then
         feat_recog_dir=${dumpdir}/${rtask}/delta${do_delta}
 
         # split data
-        splitjson.py --parts ${nj} ${feat_recog_dir}/data.json 
-
-        #### use CPU for decoding
-        ngpu=0
-
-        ${decode_cmd} JOB=1:${nj} ${expdir}/${decode_dir}/log/decode.JOB.log \
-            asr_recog.py \
-            --ngpu ${ngpu} \
-            --backend ${backend} \
-            --recog-json ${feat_recog_dir}/split${nj}utt/data.JOB.json \
-            --result-label ${expdir}/${decode_dir}/data.JOB.json \
-            --model ${expdir}/results/model.${recog_model}  \
-            --model-conf ${expdir}/results/model.conf  \
-            --beam-size ${beam_size} \
-            --penalty ${penalty} \
-            --maxlenratio ${maxlenratio} \
-            --minlenratio ${minlenratio} \
-            --ctc-weight ${ctc_weight} \
-            --lm-weight ${lm_weight} \
-#            $recog_opts &
+#        echo splitjson.py --parts ${nj} ${feat_recog_dir}/data$affix.json
+#        splitjson.py --parts ${nj} ${feat_recog_dir}/data$affix.json
+#
+#        #### use CPU for decoding
+#        ngpu=0
+#
+#        ${decode_cmd} JOB=1:${nj} ${expdir}/${decode_dir}/log/decode.JOB.log \
+#            asr_recog.py \
+#            --ngpu ${ngpu} \
+#            --backend ${backend} \
+#            --recog-json ${feat_recog_dir}/split${nj}utt/data$affix.JOB.json \
+#            --result-label ${expdir}/${decode_dir}/data.JOB.json \
+#            --model ${expdir}/results/model.${recog_model}  \
+#            --model-conf ${expdir}/results/model.conf  \
+#            --beam-size ${beam_size} \
+#            --penalty ${penalty} \
+#            --maxlenratio ${maxlenratio} \
+#            --minlenratio ${minlenratio} \
+#            --ctc-weight ${ctc_weight} \
+#            --lm-weight ${lm_weight} \
+##            $recog_opts &
         wait
 
         score_sclite.sh --wer true --nlsyms ${nlsyms} ${expdir}/${decode_dir} ${dict}

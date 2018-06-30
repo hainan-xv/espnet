@@ -66,7 +66,7 @@ recog_model=acc.best # set a model to be used for decoding: 'acc.best' or 'loss.
 
 sil=true
 file=kaldi.txt
-extra_affix=
+extra_affix=_a3
 
 # exp tag
 tag="" # tag for managing experiments.
@@ -208,8 +208,9 @@ if [ ${stage} -le 2 ]; then
 
     echo "make a dictionary"
     echo "<unk> 1" > ${dict} # <unk> must be 1, 0 will be used for "blank" in CTC
-    text2token.py -s 1 -n 1 -l ${nlsyms} data/${train_set}${affix}/text | cut -f 2- -d" " | tr " " "\n" \
-    | sort | uniq | grep -v -e '^\s*$' | awk '{print $0 " " NR+1}' >> ${dict}
+#    text2token.py -s 1 -n 1 -l ${nlsyms} data/${train_set}${affix}/text | cut -f 2- -d" " | tr " " "\n" \
+#    | sort | uniq | grep -v -e '^\s*$' | awk '{print $0 " " NR+1}' >> ${dict}
+    cat train_sil_units.txt  > $dict
     wc -l ${dict}
 
     echo "make json files"
