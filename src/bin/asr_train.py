@@ -57,7 +57,7 @@ def main():
     # network archtecture
     # encoder
     parser.add_argument('--etype', default='blstmp', type=str,
-                        choices=['blstm', 'blstmp', 'vggblstmp', 'vggblstm'],
+                        choices=['blstm', 'blstmp', 'vggblstmp', 'vggblstm', 'blstmp_tree'],
                         help='Type of encoder network architecture')
     parser.add_argument('--elayers', default=4, type=int,
                         help='Number of encoder layers')
@@ -74,7 +74,7 @@ def main():
                         help='Type of CTC implementation to calculate loss.')
     # attention
     parser.add_argument('--atype', default='dot', type=str,
-                        choices=['noatt', 'dot', 'add', 'location', 'locationkv', 'coverage',
+                        choices=['noatt', 'dot', 'add', 'location', 'locationkv', 'coverage', 'locationkv_tree',
                                  'coverage_location', 'location2d', 'location_recurrent',
                                  'multi_head_dot', 'multi_head_add', 'multi_head_loc',
                                  'multi_head_multi_res_loc'],

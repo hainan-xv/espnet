@@ -159,6 +159,7 @@ def set_forget_bias_to_one(bias):
 class E2E(torch.nn.Module):
     def __init__(self, idim, odim, args):
         super(E2E, self).__init__()
+        self.args = args
         self.etype = args.etype
         self.verbose = args.verbose
         self.char_list = args.char_list
@@ -205,6 +206,9 @@ class E2E(torch.nn.Module):
             self.att = AttAdd(args.eprojs, args.dunits, args.adim)
         elif args.atype == 'locationkv':
             self.att = AttLocKeyValue(args.eprojs, args.dunits,
+                              args.adim, args.aconv_chans, args.aconv_filts)
+        elif args.atype == 'locationkv_tree':
+            self.att = AttLocKeyValueTree(args.eprojs, args.dunits,
                               args.adim, args.aconv_chans, args.aconv_filts)
         elif args.atype == 'location':
             self.att = AttLoc(args.eprojs, args.dunits,
@@ -313,7 +317,10 @@ class E2E(torch.nn.Module):
         if self.mtlalpha == 0:
             loss_ctc = None
         else:
-            loss_ctc = self.ctc(hpad, hlens, ys)
+            size = 0
+            if self.args.atype == 'locationkv_tree':
+                size = int(hpad.size(2) / 2)
+            loss_ctc = self.ctc(hpad[:,:,size:], hlens, ys)
 
         # 4. attention loss
         if self.mtlalpha == 1:
@@ -679,6 +686,119 @@ class AttAdd(torch.nn.Module):
 
         return c, w
 
+class AttLocKeyValueTree(torch.nn.Module):
+    '''location-aware attention
+
+    Reference: Attention-Based Models for Speech Recognition
+        (https://arxiv.org/pdf/1506.07503.pdf)
+
+    :param int eprojs: # projection-units of encoder
+    :param int dunits: # units of decoder
+    :param int att_dim: attention dimension
+    :param int aconv_chans: # channels of attention convolution
+    :param int aconv_filts: filter size of attention convolution
+    '''
+
+    def __init__(self, eprojs, dunits, att_dim, aconv_chans, aconv_filts):
+        super(AttLocKeyValueTree, self).__init__()
+
+        self.mlp_enc_key = torch.nn.Linear(eprojs, att_dim)
+        self.mlp_enc_value = torch.nn.Linear(eprojs, att_dim)
+
+        self.mlp_dec = torch.nn.Linear(dunits, att_dim, bias=False)
+        self.mlp_att = torch.nn.Linear(aconv_chans, att_dim, bias=False)
+        self.loc_conv = torch.nn.Conv2d(
+            1, aconv_chans, (1, 2 * aconv_filts + 1), padding=(0, aconv_filts), bias=False)
+        self.gvec = torch.nn.Linear(att_dim, 1)
+
+        self.dunits = dunits
+        self.eprojs = eprojs
+        self.att_dim = att_dim
+        self.h_length = None
+        self.enc_h = None
+        self.pre_compute_enc_h = None
+        self.aconv_chans = aconv_chans
+
+    def reset(self):
+        '''reset states'''
+        self.h_length = None
+        self.enc_h = None
+#        self.pre_compute_enc_h = None
+        self.keys = None
+        self.values = None
+
+    def forward(self, enc_hs_pad, enc_hs_len, dec_z, att_prev, scaling=2.0):
+        '''AttLoc forward
+
+        :param Variable enc_hs_pad: padded encoder hidden state (B x T_max x D_enc)
+        :param list enc_h_len: padded encoder hidden state lenght (B)
+        :param Variable dec_z: docoder hidden state (B x D_dec)
+        :param Variable att_prev: previous attetion weight (B x T_max)
+        :param float scaling: scaling parameter before applying softmax
+        :return: attentioin weighted encoder state (B, D_enc)
+        :rtype: Variable
+        :return: previous attentioin weights (B x T_max)
+        :rtype: Variable
+        '''
+
+        half_size = int(enc_hs_pad.size(2) / 2)
+        assert(half_size == self.eprojs)
+        
+        enc_hs_pad_key = enc_hs_pad[:,:,:half_size]
+        enc_hs_pad_value = enc_hs_pad[:,:,half_size:]
+
+        batch = len(enc_hs_pad_key)
+
+        # pre-compute all h outside the decoder loop
+        if self.keys is None:
+            self.enc_h_key = enc_hs_pad_key  # utt x frame x hdim
+            self.enc_h_value = enc_hs_pad_value  # utt x frame x hdim
+
+            del enc_hs_pad_key, enc_hs_pad_value  # TODO
+            self.h_length = self.enc_h_key.size(1)
+            # utt x frame x att_dim
+#            self.pre_compute_enc_h = linear_tensor(self.mlp_enc, self.enc_h)
+#            self.keys   = self.pre_compute_enc_h[:,:,:self.att_dim]
+#            self.values = self.pre_compute_enc_h[:,:,self.att_dim:]
+            self.keys = linear_tensor(self.mlp_enc_key, self.enc_h_key)
+            self.values = linear_tensor(self.mlp_enc_value, self.enc_h_value)
+
+        if dec_z is None:
+            dec_z = Variable(enc_hs_pad.data.new(batch, self.dunits).zero_())
+        else:
+            dec_z = dec_z.view(batch, self.dunits)
+
+        # initialize attention weight with uniform dist.
+        if att_prev is None:
+            att_prev = [Variable(enc_hs_pad.data.new(
+                int(l)).zero_() + (1.0 / int(l))) for l in enc_hs_len]
+            # if no bias, 0 0-pad goes 0
+            att_prev = pad_list(att_prev, 0)
+
+        # att_prev: utt x frame -> utt x 1 x 1 x frame -> utt x att_conv_chans x 1 x frame
+        att_conv = self.loc_conv(att_prev.view(batch, 1, 1, self.h_length))
+        # att_conv: utt x att_conv_chans x 1 x frame -> utt x frame x att_conv_chans
+        att_conv = att_conv.squeeze(2).transpose(1, 2)
+        # att_conv: utt x frame x att_conv_chans -> utt x frame x att_dim
+        att_conv = linear_tensor(self.mlp_att, att_conv)
+
+        # dec_z_tiled: utt x frame x att_dim
+        dec_z_tiled = self.mlp_dec(dec_z).view(batch, 1, self.att_dim)
+
+        # dot with gvec
+        # utt x frame x att_dim -> utt x frame
+        # NOTE consider zero padding when compute w.
+        e = linear_tensor(self.gvec, torch.tanh(
+            att_conv + self.keys + dec_z_tiled)).squeeze(2)
+        w = F.softmax(scaling * e, dim=1)
+
+        # weighted sum over flames
+        # utt x hdim
+        # NOTE use bmm instead of sum(*)
+        c = torch.sum(self.values * w.view(batch, self.h_length, 1), dim=1)
+
+        return c, w
+
 class AttLocKeyValue(torch.nn.Module):
     '''location-aware attention
 
@@ -695,12 +815,12 @@ class AttLocKeyValue(torch.nn.Module):
     def __init__(self, eprojs, dunits, att_dim, aconv_chans, aconv_filts):
         super(AttLocKeyValue, self).__init__()
 
-        self.mlp_enc = torch.nn.Linear(eprojs, att_dim + int(att_dim / 2))
-        self.mlp_dec = torch.nn.Linear(dunits, int(att_dim - att_dim / 2), bias=False)
-        self.mlp_att = torch.nn.Linear(aconv_chans, int(att_dim / 2), bias=False)
+        self.mlp_enc = torch.nn.Linear(eprojs, 2 * att_dim)
+        self.mlp_dec = torch.nn.Linear(dunits, att_dim, bias=False)
+        self.mlp_att = torch.nn.Linear(aconv_chans, att_dim, bias=False)
         self.loc_conv = torch.nn.Conv2d(
             1, aconv_chans, (1, 2 * aconv_filts + 1), padding=(0, aconv_filts), bias=False)
-        self.gvec = torch.nn.Linear(att_dim - int(att_dim / 2), 1)
+        self.gvec = torch.nn.Linear(att_dim, 1)
 
         self.dunits = dunits
         self.eprojs = eprojs
@@ -731,15 +851,14 @@ class AttLocKeyValue(torch.nn.Module):
         '''
 
         batch = len(enc_hs_pad)
-        half_d_enc = int(enc_hs_pad.size(2) / 2)
         # pre-compute all h outside the decoder loop
         if self.pre_compute_enc_h is None:
             self.enc_h = enc_hs_pad  # utt x frame x hdim
             self.h_length = self.enc_h.size(1)
             # utt x frame x att_dim
             self.pre_compute_enc_h = linear_tensor(self.mlp_enc, self.enc_h)
-            self.keys   = self.pre_compute_enc_h[:,:,:int(self.eprojs/2)]
-            self.values = self.pre_compute_enc_h[:,:,int(self.eprojs/2):]
+            self.keys   = self.pre_compute_enc_h[:,:,:self.att_dim]
+            self.values = self.pre_compute_enc_h[:,:,self.att_dim:]
 
         if dec_z is None:
             dec_z = Variable(enc_hs_pad.data.new(batch, self.dunits).zero_())
@@ -761,7 +880,7 @@ class AttLocKeyValue(torch.nn.Module):
         att_conv = linear_tensor(self.mlp_att, att_conv)
 
         # dec_z_tiled: utt x frame x att_dim
-        dec_z_tiled = self.mlp_dec(dec_z).view(batch, 1, int(self.att_dim/2))
+        dec_z_tiled = self.mlp_dec(dec_z).view(batch, 1, self.att_dim)
 
         # dot with gvec
         # utt x frame x att_dim -> utt x frame
@@ -2092,6 +2211,10 @@ class Encoder(torch.nn.Module):
             self.enc1 = BLSTMP(idim, elayers, eunits,
                                eprojs, subsample, dropout)
             logging.info('BLSTM with every-layer projection for encoder')
+        elif etype == 'blstmp_tree':
+            self.enc1 = BLSTMP_TREE(idim, elayers, eunits,
+                               eprojs, subsample, dropout)
+            logging.info('BLSTM with every-layer projection for encoder')
         elif etype == 'vggblstmp':
             self.enc1 = VGG2L(in_channel)
             self.enc2 = BLSTMP(_get_vgg2l_odim(idim, in_channel=in_channel),
@@ -2121,6 +2244,8 @@ class Encoder(torch.nn.Module):
             xs, ilens = self.enc1(xs, ilens)
         elif self.etype == 'blstmp':
             xs, ilens = self.enc1(xs, ilens)
+        elif self.etype == 'blstmp_tree':
+            xs, ilens = self.enc1(xs, ilens)
         elif self.etype == 'vggblstmp':
             xs, ilens = self.enc1(xs, ilens)
             xs, ilens = self.enc2(xs, ilens)
@@ -2133,6 +2258,106 @@ class Encoder(torch.nn.Module):
             sys.exit()
 
         return xs, ilens
+
+class BLSTMP_TREE(torch.nn.Module):
+    def __init__(self, idim, elayers, cdim, hdim, subsample, dropout):
+        super(BLSTMP_TREE, self).__init__()
+
+
+        cutoff = 5
+        for i in six.moves.range(elayers):
+            if i == 0:
+                inputdim = idim
+            else:
+                inputdim = hdim
+            if i < cutoff:
+              setattr(self, "bilstm%d" % i, torch.nn.LSTM(inputdim, cdim, dropout=dropout,
+                                                          num_layers=1, bidirectional=True, batch_first=True))
+              # bottleneck layer to merge
+              setattr(self, "bt%d" % i, torch.nn.Linear(2 * cdim, hdim))
+            else:
+              setattr(self, "bilstm%d.1" % i, torch.nn.LSTM(inputdim, cdim, dropout=dropout,
+                                                          num_layers=1, bidirectional=True, batch_first=True))
+              setattr(self, "bt%d.1" % i, torch.nn.Linear(2 * cdim, hdim))
+
+              setattr(self, "bilstm%d.2" % i, torch.nn.LSTM(inputdim, cdim, dropout=dropout,
+                                                          num_layers=1, bidirectional=True, batch_first=True))
+              setattr(self, "bt%d.2" % i, torch.nn.Linear(2 * cdim, hdim))
+
+        self.elayers = elayers
+        self.cdim = cdim
+        self.subsample = subsample
+        self.cutoff = cutoff
+
+    def forward(self, xpad, ilens):
+        '''BLSTMP forward
+
+        :param xs:
+        :param ilens:
+        :return:
+        '''
+        # logging.info(self.__class__.__name__ + ' input lengths: ' + str(ilens))
+        for layer in six.moves.range(self.elayers):
+            if layer < self.cutoff:
+                xpack = pack_padded_sequence(xpad, ilens, batch_first=True)
+                bilstm = getattr(self, 'bilstm' + str(layer))
+                bilstm.flatten_parameters()
+                ys, (hy, cy) = bilstm(xpack)
+                # ys: utt list of frame x cdim x 2 (2: means bidirectional)
+                ypad, ilens = pad_packed_sequence(ys, batch_first=True)
+                sub = self.subsample[layer + 1]
+                if sub > 1:
+                    ypad = ypad[:, ::sub]
+                    ilens = [(i + 1) // sub for i in ilens]
+                # (sum _utt frame_utt) x dim
+                projected = getattr(self, 'bt' + str(layer)
+                                    )(ypad.contiguous().view(-1, ypad.size(2)))
+                xpad = torch.tanh(projected.view(ypad.size(0), ypad.size(1), -1))
+                del hy, cy
+            else:
+                if layer == self.cutoff:
+                    xpack1 = pack_padded_sequence(xpad, ilens, batch_first=True)
+                    xpack2 = xpack1
+                else:
+                    xpack1 = pack_padded_sequence(xpad1, ilens, batch_first=True)
+                    xpack2 = pack_padded_sequence(xpad2, ilens, batch_first=True)
+
+                # for key
+                bilstm1 = getattr(self, 'bilstm' + str(layer) + '.1')
+                bilstm1.flatten_parameters()
+                ys1, (hy1, cy1) = bilstm1(xpack1)
+                # ys: utt list of frame x cdim x 2 (2: means bidirectional)
+                ypad1, ilens = pad_packed_sequence(ys1, batch_first=True)
+
+                # for value
+                bilstm2 = getattr(self, 'bilstm' + str(layer) + '.2')
+                bilstm2.flatten_parameters()
+                ys2, (hy2, cy2) = bilstm2(xpack1)
+                # ys: utt list of frame x cdim x 2 (2: means bidirectional)
+                ypad2, _ = pad_packed_sequence(ys2, batch_first=True)
+
+                sub = self.subsample[layer + 1]
+                if sub > 1:
+                    ypad1 = ypad1[:, ::sub]
+                    ypad2 = ypad2[:, ::sub]
+                    ilens = [(i + 1) // sub for i in ilens]
+
+                # keys
+                # (sum _utt frame_utt) x dim
+                projected1 = getattr(self, 'bt' + str(layer) + '.1'
+                                    )(ypad1.contiguous().view(-1, ypad1.size(2)))
+                xpad1 = torch.tanh(projected.view(ypad1.size(0), ypad1.size(1), -1))
+
+                # values
+                # (sum _utt frame_utt) x dim
+                projected2 = getattr(self, 'bt' + str(layer) + '.2'
+                                    )(ypad2.contiguous().view(-1, ypad2.size(2)))
+                xpad2 = torch.tanh(projected.view(ypad2.size(0), ypad2.size(1), -1))
+                del hy1, cy1, hy2, cy2
+                if layer == self.cutoff:
+                    xpad = torch.cat([xpad1, xpad2], dim=2)
+                
+        return xpad, ilens  # x: utt list of frame x dim
 
 
 class BLSTMP(torch.nn.Module):
