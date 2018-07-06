@@ -174,7 +174,7 @@ class E2E(torch.nn.Module):
         # subsample info
         # +1 means input (+1) and layers outputs (args.elayer)
         subsample = np.ones(args.elayers + 1, dtype=np.int)
-        if args.etype == 'blstmp':
+        if args.etype == 'blstmp' or args.etype == 'blstmp_tree':
             ss = args.subsample.split("_")
             for j in range(min(args.elayers + 1, len(ss))):
                 subsample[j] = int(ss[j])
@@ -703,7 +703,7 @@ class AttLocKeyValueTree(torch.nn.Module):
         super(AttLocKeyValueTree, self).__init__()
 
         self.mlp_enc_key = torch.nn.Linear(eprojs, att_dim)
-        self.mlp_enc_value = torch.nn.Linear(eprojs, att_dim)
+#        self.mlp_enc_value = torch.nn.Linear(eprojs, att_dim)
 
         self.mlp_dec = torch.nn.Linear(dunits, att_dim, bias=False)
         self.mlp_att = torch.nn.Linear(aconv_chans, att_dim, bias=False)
@@ -714,18 +714,21 @@ class AttLocKeyValueTree(torch.nn.Module):
         self.dunits = dunits
         self.eprojs = eprojs
         self.att_dim = att_dim
-        self.h_length = None
-        self.enc_h = None
-        self.pre_compute_enc_h = None
+#        self.h_length = None
+#        self.enc_h = None
+#        self.pre_compute_enc_h = None
+#        self.enc_h_key = None
         self.aconv_chans = aconv_chans
 
     def reset(self):
         '''reset states'''
-        self.h_length = None
-        self.enc_h = None
+#        self.h_length = None
+#        self.enc_h = None
 #        self.pre_compute_enc_h = None
-        self.keys = None
-        self.values = None
+#        self.enc_hs_pad_key = None
+#        self.enc_hs_pad_value = None
+#        self.keys = None
+#        self.values = None
 
     def forward(self, enc_hs_pad, enc_hs_len, dec_z, att_prev, scaling=2.0):
         '''AttLoc forward
@@ -750,18 +753,18 @@ class AttLocKeyValueTree(torch.nn.Module):
         batch = len(enc_hs_pad_key)
 
         # pre-compute all h outside the decoder loop
-        if self.keys is None:
-            self.enc_h_key = enc_hs_pad_key  # utt x frame x hdim
-            self.enc_h_value = enc_hs_pad_value  # utt x frame x hdim
+#        if self.enc_h_key is None:
+#            self.enc_h_key = enc_hs_pad_key  # utt x frame x hdim
+#            self.enc_h_value = enc_hs_pad_value  # utt x frame x hdim
+        h_length = enc_hs_pad_key.size(1)
 
-            del enc_hs_pad_key, enc_hs_pad_value  # TODO
-            self.h_length = self.enc_h_key.size(1)
+#            del enc_hs_pad_key, enc_hs_pad_value  # TODO
             # utt x frame x att_dim
 #            self.pre_compute_enc_h = linear_tensor(self.mlp_enc, self.enc_h)
 #            self.keys   = self.pre_compute_enc_h[:,:,:self.att_dim]
 #            self.values = self.pre_compute_enc_h[:,:,self.att_dim:]
-            self.keys = linear_tensor(self.mlp_enc_key, self.enc_h_key)
-            self.values = linear_tensor(self.mlp_enc_value, self.enc_h_value)
+#            self.keys = linear_tensor(self.mlp_enc_key, self.enc_h_key)
+#            self.values = linear_tensor(self.mlp_enc_value, self.enc_h_value)
 
         if dec_z is None:
             dec_z = Variable(enc_hs_pad.data.new(batch, self.dunits).zero_())
@@ -776,7 +779,7 @@ class AttLocKeyValueTree(torch.nn.Module):
             att_prev = pad_list(att_prev, 0)
 
         # att_prev: utt x frame -> utt x 1 x 1 x frame -> utt x att_conv_chans x 1 x frame
-        att_conv = self.loc_conv(att_prev.view(batch, 1, 1, self.h_length))
+        att_conv = self.loc_conv(att_prev.view(batch, 1, 1, h_length))
         # att_conv: utt x att_conv_chans x 1 x frame -> utt x frame x att_conv_chans
         att_conv = att_conv.squeeze(2).transpose(1, 2)
         # att_conv: utt x frame x att_conv_chans -> utt x frame x att_dim
@@ -789,13 +792,13 @@ class AttLocKeyValueTree(torch.nn.Module):
         # utt x frame x att_dim -> utt x frame
         # NOTE consider zero padding when compute w.
         e = linear_tensor(self.gvec, torch.tanh(
-            att_conv + self.keys + dec_z_tiled)).squeeze(2)
+            att_conv + enc_hs_pad_key + dec_z_tiled)).squeeze(2)
         w = F.softmax(scaling * e, dim=1)
 
         # weighted sum over flames
         # utt x hdim
         # NOTE use bmm instead of sum(*)
-        c = torch.sum(self.values * w.view(batch, self.h_length, 1), dim=1)
+        c = torch.sum(enc_hs_pad_value * w.view(batch, h_length, 1), dim=1)
 
         return c, w
 
@@ -2263,8 +2266,8 @@ class BLSTMP_TREE(torch.nn.Module):
     def __init__(self, idim, elayers, cdim, hdim, subsample, dropout):
         super(BLSTMP_TREE, self).__init__()
 
-
-        cutoff = 5
+        cutoff = 3
+        print ("cutoff is", cutoff)
         for i in six.moves.range(elayers):
             if i == 0:
                 inputdim = idim
@@ -2353,8 +2356,10 @@ class BLSTMP_TREE(torch.nn.Module):
                 projected2 = getattr(self, 'bt' + str(layer) + '.2'
                                     )(ypad2.contiguous().view(-1, ypad2.size(2)))
                 xpad2 = torch.tanh(projected.view(ypad2.size(0), ypad2.size(1), -1))
+
                 del hy1, cy1, hy2, cy2
-                if layer == self.cutoff:
+
+                if layer == self.elayers - 1:
                     xpad = torch.cat([xpad1, xpad2], dim=2)
                 
         return xpad, ilens  # x: utt list of frame x dim
