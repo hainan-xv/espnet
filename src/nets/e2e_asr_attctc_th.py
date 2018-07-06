@@ -1847,12 +1847,17 @@ class Decoder(torch.nn.Module):
                  char_list=None, labeldist=None, lsm_weight=0.):
         super(Decoder, self).__init__()
         self.dunits = dunits
+        self.s = int(dunits / 2)
         self.dlayers = dlayers
-        self.embed = torch.nn.Embedding(odim, dunits)
+        self.embed = torch.nn.Embedding(odim, self.s)
         self.decoder = torch.nn.ModuleList()
-        self.decoder += [torch.nn.LSTMCell(dunits + eprojs, dunits)]
+        self.decoder += [torch.nn.LSTMCell(self.s + eprojs, self.s)]
+
+        self.decoder2 = torch.nn.ModuleList()
+        self.decoder2 += [torch.nn.LSTMCell(self.s, self.s)]
         for l in six.moves.range(1, self.dlayers):
-            self.decoder += [torch.nn.LSTMCell(dunits, dunits)]
+            self.decoder += [torch.nn.LSTMCell(self.s, self.s)]
+            self.decoder2 += [torch.nn.LSTMCell(self.s, self.s)]
         self.ignore_id = -1
         self.output = torch.nn.Linear(dunits, odim)
 
@@ -1869,7 +1874,7 @@ class Decoder(torch.nn.Module):
         self.lsm_weight = lsm_weight
 
     def zero_state(self, hpad):
-        return Variable(hpad.data.new(hpad.size(0), self.dunits).zero_())
+        return Variable(hpad.data.new(hpad.size(0), self.s).zero_())
 
     def forward(self, hpad, hlen, ys):
         '''Decoder forward
@@ -1900,9 +1905,15 @@ class Decoder(torch.nn.Module):
         # initialization
         c_list = [self.zero_state(hpad)]
         z_list = [self.zero_state(hpad)]
+        
+        c_list2 = [self.zero_state(hpad)]
+        z_list2 = [self.zero_state(hpad)]
         for l in six.moves.range(1, self.dlayers):
             c_list.append(self.zero_state(hpad))
             z_list.append(self.zero_state(hpad))
+
+            c_list2.append(self.zero_state(hpad))
+            z_list2.append(self.zero_state(hpad))
         att_w = None
         z_all = []
         self.att.reset()  # reset pre-computation of h
@@ -1912,13 +1923,19 @@ class Decoder(torch.nn.Module):
 
         # loop for an output sequence
         for i in six.moves.range(olength):
-            att_c, att_w = self.att(hpad, hlen, z_list[0], att_w)
+            att_c, att_w = self.att(hpad, hlen, torch.cat([z_list[0], z_list2[0]], dim=-1), att_w)
             ey = torch.cat((eys[:, i, :], att_c), dim=1)  # utt x (zdim + hdim)
             z_list[0], c_list[0] = self.decoder[0](ey, (z_list[0], c_list[0]))
+            z_list[0], c_list[0] = self.decoder[0](ey, (z_list[0], c_list[0]))
+
+            z_list2[0], c_list2[0] = self.decoder2[0](eys[:, i, :], (z_list2[0], c_list2[0]))
+            z_list2[0], c_list2[0] = self.decoder2[0](eys[:, i, :], (z_list2[0], c_list2[0]))
             for l in six.moves.range(1, self.dlayers):
                 z_list[l], c_list[l] = self.decoder[l](
                     z_list[l - 1], (z_list[l], c_list[l]))
-            z_all.append(z_list[-1])
+                z_list2[l], c_list2[l] = self.decoder2[l](
+                    z_list2[l - 1], (z_list2[l], c_list2[l]))
+            z_all.append(torch.cat([z_list[-1], z_list2[-1]], dim=-1))
 
         z_all = torch.stack(z_all, dim=1).view(batch * olength, self.dunits)
         # compute loss
@@ -2143,9 +2160,13 @@ class Decoder(torch.nn.Module):
         # initialization
         c_list = [self.zero_state(hpad)]
         z_list = [self.zero_state(hpad)]
+        c_list2 = [self.zero_state(hpad)]
+        z_list2 = [self.zero_state(hpad)]
         for l in six.moves.range(1, self.dlayers):
             c_list.append(self.zero_state(hpad))
             z_list.append(self.zero_state(hpad))
+            c_list2.append(self.zero_state(hpad))
+            z_list2.append(self.zero_state(hpad))
         att_w = None
         att_ws = []
         self.att.reset()  # reset pre-computation of h
@@ -2155,12 +2176,15 @@ class Decoder(torch.nn.Module):
 
         # loop for an output sequence
         for i in six.moves.range(olength):
-            att_c, att_w = self.att(hpad, hlen, z_list[0], att_w)
+            att_c, att_w = self.att(hpad, hlen, torch.cat([z_list[0], z_list2[0]], dim=-1), att_w)
             ey = torch.cat((eys[:, i, :], att_c), dim=1)  # utt x (zdim + hdim)
             z_list[0], c_list[0] = self.decoder[0](ey, (z_list[0], c_list[0]))
+            z_list2[0], c_list2[0] = self.decoder2[0](eys[:, i, :], (z_list2[0], c_list2[0]))
             for l in six.moves.range(1, self.dlayers):
                 z_list[l], c_list[l] = self.decoder[l](
                     z_list[l - 1], (z_list[l], c_list[l]))
+                z_list2[l], c_list2[l] = self.decoder2[l](
+                    z_list2[l - 1], (z_list2[l], c_list2[l]))
             att_ws.append(att_w)
 
         # convert to numpy array with the shape (B, Lmax, Tmax)
