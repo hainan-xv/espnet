@@ -351,9 +351,11 @@ class E2E(torch.nn.Module):
         # make a utt list (1) to use the same interface for encoder
         h, _ = self.enc(h.unsqueeze(0), ilen)
 
+        half_size = int(h.size(2) / 2)
+
         # calculate log P(z_t|X) for CTC scores
         if recog_args.ctc_weight > 0.0:
-            lpz = self.ctc.log_softmax(h).data[0]
+            lpz = self.ctc.log_softmax(h[:,:,half_size:]).data[0]
         else:
             lpz = None
 
