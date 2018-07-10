@@ -1663,7 +1663,7 @@ class Decoder(torch.nn.Module):
         for l in six.moves.range(1, self.dlayers):
             self.decoder += [torch.nn.LSTMCell(dunits, dunits)]
         self.ignore_id = -1
-        self.output = torch.nn.Linear(dunits, odim)
+        self.output = torch.nn.Linear(2 * dunits, odim)
 
         self.loss = None
         self.att = att
@@ -1732,6 +1732,9 @@ class Decoder(torch.nn.Module):
             z_all.append(z_list[-1])
 
         z_all = torch.stack(z_all, dim=1).view(batch * olength, self.dunits)
+
+        tmp = eys.view(-1, self.dunits)
+        z_all = torch.cat([z_all, tmp], dim=1)
         # compute loss
         y_all = self.output(z_all)
         self.loss = F.cross_entropy(y_all, pad_ys_out.view(-1),
@@ -1832,17 +1835,24 @@ class Decoder(torch.nn.Module):
             for hyp in hyps:
                 vy.unsqueeze(1)
                 vy[0] = hyp['yseq'][i]
-                ey = self.embed(vy)           # utt list (1) x zdim
-                ey.unsqueeze(0)
+                oldey = self.embed(vy)           # utt list (1) x zdim
+#                print(oldey.shape) # 300
+                oldey.unsqueeze(0)
+#                print(oldey.shape) # 300
                 att_c, att_w = self.att(h.unsqueeze(0), [h.size(0)], hyp['z_prev'][0], hyp['a_prev'])
-                ey = torch.cat((ey, att_c), dim=1)   # utt(1) x (zdim + hdim)
+                ey = torch.cat((oldey, att_c), dim=1)   # utt(1) x (zdim + hdim)
                 z_list[0], c_list[0] = self.decoder[0](ey, (hyp['z_prev'][0], hyp['c_prev'][0]))
                 for l in six.moves.range(1, self.dlayers):
                     z_list[l], c_list[l] = self.decoder[l](
                         z_list[l - 1], (hyp['z_prev'][l], hyp['c_prev'][l]))
 
+#                print(ey.shape) # 620
+#                print(z_list[-1].shape) # 300
+#                print(self.output) # 600 30
+
                 # get nbest local scores and their ids
-                local_att_scores = F.log_softmax(self.output(z_list[-1]), dim=1).data
+                concatted = torch.cat([z_list[-1], oldey], dim=1)
+                local_att_scores = F.log_softmax(self.output(concatted), dim=1).data
                 if rnnlm:
                     rnnlm_state, local_lm_scores = rnnlm.predict(hyp['rnnlm_prev'], vy)
                     local_scores = local_att_scores + recog_args.lm_weight * local_lm_scores

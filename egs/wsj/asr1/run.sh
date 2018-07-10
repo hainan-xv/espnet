@@ -7,10 +7,10 @@
 . ./cmd.sh
 
 # general configuration
-backend=chainer
+backend=pytorch
 stage=0        # start from 0 if you need to start from data preparation
 gpu=            # will be deprecated, please use ngpu
-ngpu=0          # number of gpus ("0" uses cpu, otherwise use gpu)
+ngpu=1          # number of gpus ("0" uses cpu, otherwise use gpu)
 debugmode=1
 dumpdir=dump   # directory to dump full features
 N=0            # number of minibatches to be used (mainly for debugging). "0" uses all minibatches.
@@ -23,7 +23,7 @@ do_delta=false # true when using CNN
 
 # network archtecture
 # encoder related
-etype=vggblstmp     # encoder architecture type
+etype=blstmp     # encoder architecture type
 elayers=6
 eunits=320
 eprojs=320
@@ -132,7 +132,7 @@ if [ ${stage} -le 1 ]; then
     fi
     if [[ $(hostname -f) == *.clsp.jhu.edu ]] && [ ! -d ${feat_dt_dir}/storage ]; then
     utils/create_split_dir.pl \
-        /export/b{10,11,12,13}/${USER}/espnet-data/egs/wsj/asr1/dump/${train_dev}/delta${do_delta}/storage \
+        /export/b{10,11,12,13}/${USER}/espnet-data-new-decoder/egs/wsj/asr1/dump/${train_dev}/delta${do_delta}/storage \
         ${feat_dt_dir}/storage
     fi
     dump.sh --cmd "$train_cmd" --nj 32 --do_delta $do_delta \
@@ -192,7 +192,7 @@ else
     lmdict=$dict
 fi
 mkdir -p ${lmexpdir}
-if [ ${stage} -le 3 ]; then
+false && if [ ${stage} -le 3 ]; then
     echo "stage 3: LM Preparation"
     mkdir -p ${lmdatadir}
     if [ $use_wordlm = true ]; then
@@ -299,7 +299,7 @@ if [ ${stage} -le 5 ]; then
         feat_recog_dir=${dumpdir}/${rtask}/delta${do_delta}
 
         # split data
-        splitjson.py --parts ${nj} ${feat_recog_dir}/data.json 
+#        splitjson.py --parts ${nj} ${feat_recog_dir}/data.json 
 
         #### use CPU for decoding
         ngpu=0
@@ -317,8 +317,9 @@ if [ ${stage} -le 5 ]; then
             --maxlenratio ${maxlenratio} \
             --minlenratio ${minlenratio} \
             --ctc-weight ${ctc_weight} \
-            --lm-weight ${lm_weight} \
-            $recog_opts &
+
+#            --lm-weight ${lm_weight} \
+#            $recog_opts &
         wait
 
         score_sclite.sh --wer true --nlsyms ${nlsyms} ${expdir}/${decode_dir} ${dict}

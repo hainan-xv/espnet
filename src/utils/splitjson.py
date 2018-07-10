@@ -27,8 +27,12 @@ if __name__ == '__main__':
     ids = [x for x in j['utts']]
 
     ndics = len(ids)
+    print (ndics)
+    print (ndics // args.parts)
     parts = [x for x in range (0, ndics, ndics // args.parts)]
+    print (parts)
 
+#    print( len(parts), args.parts)
     if len(parts) == args.parts + 1:
         parts[args.parts] = ndics
     elif len(parts) == args.parts:
