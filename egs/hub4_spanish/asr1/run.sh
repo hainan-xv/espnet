@@ -6,11 +6,12 @@
 . ./path.sh
 . ./cmd.sh
 
+silmodel=true
 # general configuration
-backend=chainer
+backend=pytorch
 stage=0        # start from 0 if you need to start from data preparation
 gpu=            # will be deprecated, please use ngpu
-ngpu=0          # number of gpus ("0" uses cpu, otherwise use gpu)
+ngpu=1          # number of gpus ("0" uses cpu, otherwise use gpu)
 debugmode=1
 dumpdir=dump   # directory to dump full features
 N=0            # number of minibatches to be used (mainly for debugging). "0" uses all minibatches.
@@ -24,7 +25,7 @@ do_delta=false # true when using CNN
 
 # network archtecture
 # encoder related
-etype=vggblstmp     # encoder architecture type
+etype=blstmp     # encoder architecture type
 elayers=6
 eunits=320
 eprojs=320
@@ -97,6 +98,13 @@ transcript_data=/export/corpora/LDC/LDC98T29
 eval_data=/export/corpora/LDC/LDC2001S91
 dev_list=dev.list
 
+affix=
+
+if $silmodel; then
+  affix=_sil
+else
+  affix=_nosil
+fi
 
 if [ $stage -le 0 ]; then
   # Eval dataset preparation
@@ -129,6 +137,7 @@ if [ $stage -le 0 ]; then
   mkdir -p data/train
   awk '{print $1}' data/dev/segments | grep -vf - data/train.tmp/segments > data/train/uttlist.list
   ./utils/subset_data_dir.sh --utt-list data/train/uttlist.list data/train.tmp data/train
+  exit
 fi
 
 feat_tr_dir=${dumpdir}/${train_set}/delta${do_delta}; mkdir -p ${feat_tr_dir}
@@ -169,39 +178,52 @@ if [ ${stage} -le 1 ]; then
     done
 fi
 
-dict=data/lang_1char/${train_set}_units.txt
+dict=data/lang_1char/${train_set}${affix}_units.txt
 nlsyms=data/lang_1char/non_lang_syms.txt
 
 echo "dictionary: ${dict}"
 if [ ${stage} -le 2 ]; then
+    [ -d data/${train_set}$affix ] && rm data/${train_set}$affix -rf
+    [ -d data/${train_dev}$affix ] && rm data/${train_dev}$affix -rf
+
+    cp data/${train_set}/ data/${train_set}$affix -r
+    cp data/${train_dev}/ data/${train_dev}$affix -r
+    if $silmodel; then
+      cp kaldi.txt data/${train_set}$affix/text
+      cp kaldi.txt data/${train_dev}$affix/text
+    else
+      cat kaldi.txt | sed "s=@==g" > data/${train_set}$affix/text
+      cat kaldi.txt | sed "s=@==g" > data/${train_dev}$affix/text
+    fi
     ### Task dependent. You have to check non-linguistic symbols used in the corpus.
     echo "stage 2: Dictionary and Json Data Preparation"
     mkdir -p data/lang_1char/
 
     echo "make a non-linguistic symbol list"
-    cut -f 2- data/${train_set}/text | tr " " "\n" | sort | uniq | grep "<" > ${nlsyms}
+    cut -f 2- data/${train_set}$affix/text | tr " " "\n" | sort | uniq | grep "<" > ${nlsyms}
     cat ${nlsyms}
 
     echo "make a dictionary"
     echo "<unk> 1" > ${dict} # <unk> must be 1, 0 will be used for "blank" in CTC
-    text2token.py -s 1 -n 1 -l ${nlsyms} data/${train_set}/text | cut -f 2- -d" " | tr " " "\n" \
+    text2token.py -s 1 -n 1 -l ${nlsyms} data/${train_set}$affix/text | cut -f 2- -d" " | tr " " "\n" \
     | sort | uniq | grep -v -e '^\s*$' | awk '{print $0 " " NR+1}' >> ${dict}
     wc -l ${dict}
 
     echo "make json files"
     data2json.sh --feat ${feat_tr_dir}/feats.scp --nlsyms ${nlsyms} \
-         data/${train_set} ${dict} > ${feat_tr_dir}/data.json
+         data/${train_set}$affix ${dict} > ${feat_tr_dir}/data$affix.json
     data2json.sh --feat ${feat_dt_dir}/feats.scp --nlsyms ${nlsyms} \
-         data/${train_dev} ${dict} > ${feat_dt_dir}/data.json
+         data/${train_dev}$affix ${dict} > ${feat_dt_dir}/data$affix.json
+    exit
 fi
 
 if [ -z ${tag} ]; then
-    expdir=exp/${train_set}_${etype}_e${elayers}_subsample${subsample}_unit${eunits}_proj${eprojs}_d${dlayers}_unit${dunits}_${atype}_aconvc${aconv_chans}_aconvf${aconv_filts}_mtlalpha${mtlalpha}_${opt}_bs${batchsize}_mli${maxlen_in}_mlo${maxlen_out}
+    expdir=exp/${train_set}${affix}_${etype}_e${elayers}_subsample${subsample}_unit${eunits}_proj${eprojs}_d${dlayers}_unit${dunits}_${atype}_aconvc${aconv_chans}_aconvf${aconv_filts}_mtlalpha${mtlalpha}_${opt}_bs${batchsize}_mli${maxlen_in}_mlo${maxlen_out}
     if [ "${lsm_type}" != "" ]; then
         expdir=${expdir}_lsm${lsm_type}${lsm_weight}
     fi
     if ${do_delta}; then
-        expdir=${expdir}_delta
+        expdir=${expdir}${affix}_delta
     fi
 else
     expdir=exp/${train_set}_${tag}
@@ -223,8 +245,8 @@ if [ ${stage} -le 3 ]; then
         --verbose ${verbose} \
         --resume ${resume} \
         --seed ${seed} \
-        --train-json ${feat_tr_dir}/data.json \
-        --valid-json ${feat_dt_dir}/data.json \
+        --train-json ${feat_tr_dir}/data$affix.json \
+        --valid-json ${feat_dt_dir}/data$affix.json \
         --etype ${etype} \
         --elayers ${elayers} \
         --eunits ${eunits} \
@@ -245,6 +267,7 @@ if [ ${stage} -le 3 ]; then
         --maxlen-in ${maxlen_in} \
         --maxlen-out ${maxlen_out} \
         --opt ${opt} \
+        --eps-decay 1 \
         --epochs ${epochs}
 fi
 
@@ -262,7 +285,7 @@ if [ ${stage} -le 4 ]; then
         sdata=${data}/split${decode_nj}utt;
 
         # make json labels for recognition
-        for j in `seq 1 ${nj}`; do
+        for j in `seq 1 ${decode_nj}`; do
             data2json.sh --feat ${feat_recog_dir}/feats.scp --nlsyms ${nlsyms} \
                 ${sdata}/${j} ${dict} > ${sdata}/${j}/data.json
         done

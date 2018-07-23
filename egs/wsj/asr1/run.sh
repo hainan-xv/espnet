@@ -156,24 +156,24 @@ if [ ${stage} -le 1 ]; then
     done
 fi
 
-[ -d data/${train_set}$affix ] && rm data/${train_set}$affix -rf
-[ -d data/${train_dev}$affix ] && rm data/${train_dev}$affix -rf
-
-cp data/${train_set}/ data/${train_set}$affix -r
-cp data/${train_dev}/ data/${train_dev}$affix -r
-if $silmodel; then
-  cp kaldi.txt data/${train_set}$affix/text
-  cp kaldi.txt data/${train_dev}$affix/text
-else
-  cat kaldi.txt | sed "s=@==g" > data/${train_set}$affix/text
-  cat kaldi.txt | sed "s=@==g" > data/${train_dev}$affix/text
-fi
 
 dict=data/lang_1char/${train_set}${affix}_units.txt
 nlsyms=data/lang_1char/non_lang_syms.txt
 
 echo "dictionary: ${dict}"
 if [ ${stage} -le 2 ]; then
+    [ -d data/${train_set}$affix ] && rm data/${train_set}$affix -rf
+    [ -d data/${train_dev}$affix ] && rm data/${train_dev}$affix -rf
+
+    cp data/${train_set}/ data/${train_set}$affix -r
+    cp data/${train_dev}/ data/${train_dev}$affix -r
+    if $silmodel; then
+      cp kaldi.txt data/${train_set}$affix/text
+      cp kaldi.txt data/${train_dev}$affix/text
+    else
+      cat kaldi.txt | sed "s=@==g" > data/${train_set}$affix/text
+      cat kaldi.txt | sed "s=@==g" > data/${train_dev}$affix/text
+    fi
     ### Task dependent. You have to check non-linguistic symbols used in the corpus.
     echo "stage 2: Dictionary and Json Data Preparation"
     mkdir -p data/lang_1char/
@@ -294,29 +294,29 @@ if [ ${stage} -le 5 ]; then
         sdata=${data}/split${nj}utt;
 
          # make json labels for recognition
-        for j in `seq 1 ${nj}`; do
-            data2json.sh --feat ${feat_recog_dir}/feats.scp --nlsyms ${nlsyms} \
-                ${sdata}/${j} ${dict} > ${sdata}/${j}/data.json
-        done
-
-        #### use CPU for decoding
-        ngpu=0
-
-        ${decode_cmd} JOB=1:${nj} ${expdir}/${decode_dir}/log/decode.JOB.log \
-            asr_recog.py \
-            --ngpu ${ngpu} \
-            --backend ${backend} \
-            --recog-json ${sdata}/JOB/data.json \
-            --result-label ${expdir}/${decode_dir}/data.JOB.json \
-            --model ${expdir}/results/model.${recog_model}  \
-            --model-conf ${expdir}/results/model.conf  \
-            --beam-size ${beam_size} \
-            --penalty ${penalty} \
-            --maxlenratio ${maxlenratio} \
-            --minlenratio ${minlenratio} \
-            --ctc-weight ${ctc_weight} \
-            --lm-weight ${lm_weight} &
-        wait
+#        for j in `seq 1 ${nj}`; do
+#            data2json.sh --feat ${feat_recog_dir}/feats.scp --nlsyms ${nlsyms} \
+#                ${sdata}/${j} ${dict} > ${sdata}/${j}/data.json
+#        done
+#
+#        #### use CPU for decoding
+#        ngpu=0
+#
+#        ${decode_cmd} JOB=1:${nj} ${expdir}/${decode_dir}/log/decode.JOB.log \
+#            asr_recog.py \
+#            --ngpu ${ngpu} \
+#            --backend ${backend} \
+#            --recog-json ${sdata}/JOB/data.json \
+#            --result-label ${expdir}/${decode_dir}/data.JOB.json \
+#            --model ${expdir}/results/model.${recog_model}  \
+#            --model-conf ${expdir}/results/model.conf  \
+#            --beam-size ${beam_size} \
+#            --penalty ${penalty} \
+#            --maxlenratio ${maxlenratio} \
+#            --minlenratio ${minlenratio} \
+#            --ctc-weight ${ctc_weight} \
+#            --lm-weight ${lm_weight} &
+#        wait
 
         score_sclite.sh --wer true --nlsyms ${nlsyms} ${expdir}/${decode_dir} ${dict}
 
