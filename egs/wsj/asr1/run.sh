@@ -200,7 +200,7 @@ if [ ${stage} -le 3 ]; then
         --valid-label ${lmdatadir}/valid.txt \
         --dict ${dict}
 fi
-
+exit
 if [ -z ${tag} ]; then
     expdir=exp/${train_set}_${etype}_e${elayers}_subsample${subsample}_unit${eunits}_proj${eprojs}_d${dlayers}_unit${dunits}_${atype}_aconvc${aconv_chans}_aconvf${aconv_filts}_mtlalpha${mtlalpha}_${opt}_bs${batchsize}_mli${maxlen_in}_mlo${maxlen_out}
     if [ "${lsm_type}" != "" ]; then
@@ -290,8 +290,8 @@ if [ ${stage} -le 5 ]; then
             --maxlenratio ${maxlenratio} \
             --minlenratio ${minlenratio} \
             --ctc-weight ${ctc_weight} \
-            --rnnlm ${lmexpdir}/rnnlm.model.best \
             --lm-weight ${lm_weight} &
+#            --rnnlm ${lmexpdir}/rnnlm.model.best \
         wait
 
         score_sclite.sh --wer true --nlsyms ${nlsyms} ${expdir}/${decode_dir} ${dict}
