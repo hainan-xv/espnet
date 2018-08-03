@@ -265,8 +265,8 @@ class E2E(torch.nn.Module):
         self.dec.embed.weight.data.normal_(0, 1)
         # forget-bias = 1.0
         # https://discuss.pytorch.org/t/set-forget-gate-bias-of-lstm/1745
-        for l in six.moves.range(len(self.dec.decoder)):
-            set_forget_bias_to_one(self.dec.decoder[l].bias_ih)
+        for l in six.moves.range(len(self.dec.decoder2)):
+            set_forget_bias_to_one(self.dec.decoder2[l].bias_ih)
 
     # x[i]: ('utt_id', {'ilen':'xxx',...}})
     def forward(self, data):
@@ -1626,14 +1626,14 @@ class Decoder(torch.nn.Module):
         self.dunits = dunits
         self.dlayers = dlayers
         self.embed = torch.nn.Embedding(odim, dunits)
-        self.decoder = torch.nn.ModuleList()
-        self.decoder += [torch.nn.LSTMCell(dunits + eprojs, dunits)]
+        self.nn_decoder = torch.nn.ModuleList()
+        self.nn_decoder += [torch.nn.Linear(dunits + eprojs, dunits)]
 
         self.decoder2 = torch.nn.ModuleList()
         self.decoder2 += [torch.nn.LSTMCell(dunits, dunits)]
 
         for l in six.moves.range(1, self.dlayers):
-            self.decoder += [torch.nn.LSTMCell(dunits, dunits)]
+            self.nn_decoder += [torch.nn.Linear(dunits, dunits)]
             self.decoder2 += [torch.nn.LSTMCell(dunits, dunits)]
 
         self.ignore_id = -1
@@ -1700,13 +1700,6 @@ class Decoder(torch.nn.Module):
         # pre-computation of embedding
         eys = self.embed(pad_ys_in)  # utt x olen x zdim
 
-#        for i in six.moves.range(olength):
-#            ey2 = eys[:, i, :]
-#            z_list2[0], c_list2[0] = self.decoder2[0](ey2, (z_list2[0], c_list2[0]))
-#            for l in six.moves.range(1, self.dlayers):
-#                z_list2[l], c_list2[l] = self.decoder2[l](z_list2[l - 1], (z_list2[l], c_list2[l]))
-#            z_all2.append(z_list2[-1])
-
         # loop for an output sequence
         for i in six.moves.range(olength):
             ey2 = eys[:, i, :]
@@ -1718,10 +1711,9 @@ class Decoder(torch.nn.Module):
             att_c, att_w = self.att(hpad, hlen, z_list[0], att_w)
 #            ey = torch.cat((z_all2[i], att_c), dim=1)  # utt x (zdim + hdim)
             ey = torch.cat((z_list2[-1], att_c), dim=1)  # utt x (zdim + hdim)
-            z_list[0], c_list[0] = self.decoder[0](ey, (z_list[0], c_list[0]))
+            z_list[0] = torch.sigmoid(self.nn_decoder[0](ey))
             for l in six.moves.range(1, self.dlayers):
-                z_list[l], c_list[l] = self.decoder[l](
-                    z_list[l - 1], (z_list[l], c_list[l]))
+                z_list[l] = torch.sigmoid(self.nn_decoder[l](z_list[l - 1]))
             z_all.append(z_list[-1])
 
         z_all = torch.stack(z_all, dim=1).view(batch * olength, self.dunits)
@@ -1835,12 +1827,12 @@ class Decoder(torch.nn.Module):
 
                 ey = torch.cat((z_list2[0], att_c), dim=1)   # utt(1) x (zdim + hdim)
 
-                z_list[0], c_list[0] = self.decoder[0](ey, (hyp['z_prev'][0], hyp['c_prev'][0]))
+                z_list[0] = torch.sigmoid(self.nn_decoder[0](ey))
                 for l in six.moves.range(1, self.dlayers):
                     z_list2[l], c_list2[l] = self.decoder2[l](
                         z_list2[l - 1], (hyp['z_prev2'][l], hyp['c_prev2'][l]))
-                    z_list[l], c_list[l] = self.decoder[l](
-                        z_list[l - 1], (hyp['z_prev'][l], hyp['c_prev'][l]))
+                    z_list[l] = torch.sigmoid(self.nn_decoder[l](
+                        z_list[l - 1]))
 
                 # get nbest local scores and their ids
                 local_att_scores = F.log_softmax(self.output(z_list[-1]), dim=1).data
@@ -1985,12 +1977,11 @@ class Decoder(torch.nn.Module):
             z_list2[0], c_list2[0] = self.decoder2[0](ey, (z_list2[0], c_list2[0]))
 
             ey = torch.cat((z_list2[0], att_c), dim=1)  # utt x (zdim + hdim)
-            z_list[0], c_list[0] = self.decoder[0](ey, (z_list[0], c_list[0]))
+            z_list[0] = torch.sigmoid(self.nn_decoder[0](ey))
             for l in six.moves.range(1, self.dlayers):
                 z_list2[l], c_list2[l] = self.decoder2[l](
                     z_list2[l - 1], (z_list2[l], c_list2[l]))
-                z_list[l], c_list[l] = self.decoder[l](
-                    z_list[l - 1], (z_list[l], c_list[l]))
+                z_list[l] = torch.sigmoid(self.nn_decoder[l](z_list[l - 1]))
             att_ws.append(att_w)
 
         # convert to numpy array with the shape (B, Lmax, Tmax)

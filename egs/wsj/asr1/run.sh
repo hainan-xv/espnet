@@ -71,7 +71,7 @@ wsj0=/export/corpora5/LDC/LDC93S6B
 wsj1=/export/corpora5/LDC/LDC94S13B
 
 # exp tag
-tag="" # tag for managing experiments.
+tag="2_decoder_nn" # tag for managing experiments.
 
 . utils/parse_options.sh || exit 1;
 
@@ -105,8 +105,8 @@ if [ ${stage} -le 0 ]; then
     echo "stage 0: Data preparation"
     local/wsj_data_prep.sh ${wsj0}/??-{?,??}.? ${wsj1}/??-{?,??}.?
     local/wsj_format_data.sh
+exit
 fi
-
 feat_tr_dir=${dumpdir}/${train_set}/delta${do_delta}; mkdir -p ${feat_tr_dir}
 feat_dt_dir=${dumpdir}/${train_dev}/delta${do_delta}; mkdir -p ${feat_dt_dir}
 if [ ${stage} -le 1 ]; then
@@ -200,7 +200,7 @@ if [ ${stage} -le 3 ]; then
         --valid-label ${lmdatadir}/valid.txt \
         --dict ${dict}
 fi
-exit
+
 if [ -z ${tag} ]; then
     expdir=exp/${train_set}_${etype}_e${elayers}_subsample${subsample}_unit${eunits}_proj${eprojs}_d${dlayers}_unit${dunits}_${atype}_aconvc${aconv_chans}_aconvf${aconv_filts}_mtlalpha${mtlalpha}_${opt}_bs${batchsize}_mli${maxlen_in}_mlo${maxlen_out}
     if [ "${lsm_type}" != "" ]; then
