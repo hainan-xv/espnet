@@ -763,6 +763,29 @@ class AttLoc(torch.nn.Module):
             att_conv + self.pre_compute_enc_h + dec_z_tiled)).squeeze(2)
         w = F.softmax(scaling * e, dim=1)
 
+
+        cum_old = torch.cumsum(att_prev, dim=-1)
+        cum_new = torch.cumsum(w, dim=-1)
+        diff = torch.clamp(cum_new - cum_old, max=0)
+        cum_new = cum_old + diff
+        zeros = torch.zeros(cum_new.shape[0], 1)
+
+        zeros = zeros.cuda()
+        t = cum_new[:,1:]
+        print("shapes are: ", zeros.shape)
+        print("shapes are: ", t.shape)
+        print (zeros, t)
+
+        tmp = torch.cat((zeros, zeros), dim=1)
+        print (tmp)
+#        tmp = torch.cat((zeros, t), dim=1)
+
+        w = cum_new - tmp
+#        w = cum_new - torch.cat((zeros, cum_new[:,1:]), dim=1)
+        print("prev: ", att_prev)
+        print("now: ", w)
+
+
         # weighted sum over flames
         # utt x hdim
         # NOTE use bmm instead of sum(*)
