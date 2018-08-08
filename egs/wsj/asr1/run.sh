@@ -7,10 +7,10 @@
 . ./cmd.sh
 
 # general configuration
-backend=chainer
+backend=pytorch
 stage=0        # start from 0 if you need to start from data preparation
 gpu=            # will be deprecated, please use ngpu
-ngpu=0          # number of gpus ("0" uses cpu, otherwise use gpu)
+ngpu=1          # number of gpus ("0" uses cpu, otherwise use gpu)
 debugmode=1
 dumpdir=dump   # directory to dump full features
 N=0            # number of minibatches to be used (mainly for debugging). "0" uses all minibatches.
@@ -23,7 +23,7 @@ do_delta=false # true when using CNN
 
 # network archtecture
 # encoder related
-etype=vggblstmp     # encoder architecture type
+etype=blstmp     # encoder architecture type
 elayers=6
 eunits=320
 eprojs=320
@@ -71,7 +71,7 @@ wsj0=/export/corpora5/LDC/LDC93S6B
 wsj1=/export/corpora5/LDC/LDC94S13B
 
 # exp tag
-tag="" # tag for managing experiments.
+tag="monotonic" # tag for managing experiments.
 
 . utils/parse_options.sh || exit 1;
 
