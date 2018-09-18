@@ -29,7 +29,7 @@ eprojs=320
 subsample=1_2_2_1_1 # skip every n frame from input to nth layers
 # decoder related
 dlayers=1
-dunits=600
+dunits=150
 # attention related
 atype=location
 adim=320
