@@ -9,7 +9,7 @@
 # general configuration
 backend=pytorch
 stage=-1       # start from -1 if you need to start from data download
-ngpu=0         # number of gpus ("0" uses cpu, otherwise use gpu)
+ngpu=1         # number of gpus ("0" uses cpu, otherwise use gpu)
 debugmode=1
 dumpdir=dump   # directory to dump full features
 N=0            # number of minibatches to be used (mainly for debugging). "0" uses all minibatches.
@@ -21,17 +21,17 @@ do_delta=false
 
 # network archtecture
 # encoder related
-etype=vggblstm     # encoder architecture type
+etype=blstm     # encoder architecture type
 elayers=4
-eunits=1024
-eprojs=1024
+eunits=320
+eprojs=320
 subsample=1_2_2_1_1 # skip every n frame from input to nth layers
 # decoder related
 dlayers=1
-dunits=1024
+dunits=300
 # attention related
 atype=location
-adim=1024
+adim=320
 aconv_chans=10
 aconv_filts=100
 
@@ -84,13 +84,13 @@ set -e
 set -u
 set -o pipefail
 
-train_set=train_960
+train_set=train_100
 train_dev=dev
 recog_set="test_clean test_other dev_clean dev_other"
 
 if [ ${stage} -le -1 ]; then
     echo "stage -1: Data Download"
-    for part in dev-clean test-clean dev-other test-other train-clean-100 train-clean-360 train-other-500; do
+    for part in dev-clean test-clean dev-other test-other train-clean-100; do # train-clean-360 train-other-500; do
         local/download_and_untar.sh ${datadir} ${data_url} ${part}
     done
 fi
@@ -99,7 +99,7 @@ if [ ${stage} -le 0 ]; then
     ### Task dependent. You have to make data the following preparation part by yourself.
     ### But you can utilize Kaldi recipes in most cases
     echo "stage 0: Data preparation"
-    for part in dev-clean test-clean dev-other test-other train-clean-100 train-clean-360 train-other-500; do
+    for part in dev-clean test-clean dev-other test-other train-clean-100; do # train-clean-360 train-other-500; do
         # use underscore-separated names in data directories.
         local/data_prep.sh ${datadir}/LibriSpeech/${part} data/$(echo ${part} | sed s/-/_/g)
     done
@@ -113,12 +113,12 @@ if [ ${stage} -le 1 ]; then
     echo "stage 1: Feature Generation"
     fbankdir=fbank
     # Generate the fbank features; by default 80-dimensional fbanks with pitch on each frame
-    for x in dev_clean test_clean dev_other test_other train_clean_100 train_clean_360 train_other_500; do
+    for x in dev_clean test_clean dev_other test_other train_clean_100; do # train_clean_360 train_other_500; do
         steps/make_fbank_pitch.sh --cmd "$train_cmd" --nj 32 --write_utt2num_frames true \
             data/${x} exp/make_fbank/${x} ${fbankdir}
     done
 
-    utils/combine_data.sh data/${train_set}_org data/train_clean_100 data/train_clean_360 data/train_other_500
+    utils/combine_data.sh data/${train_set}_org data/train_clean_100 #data/train_clean_360 data/train_other_500
     utils/combine_data.sh data/${train_dev}_org data/dev_clean data/dev_other
 
     # remove utt having more than 3000 frames
@@ -181,30 +181,30 @@ fi
 # You can skip this and remove --rnnlm option in the recognition (stage 5)
 lmexpdir=exp/train_rnnlm_${backend}_2layer_bs256_${bpemode}${nbpe}
 mkdir -p ${lmexpdir}
-if [ ${stage} -le 3 ]; then
-    echo "stage 3: LM Preparation"
-    lmdatadir=data/local/lm_train_${bpemode}${nbpe}
-    mkdir -p ${lmdatadir}
-    spm_encode --model=${bpemodel}.model --output_format=piece < data/lang_char/input.txt | perl -pe 's/\n/ <eos> /g' \
-        > ${lmdatadir}/train.txt
-        cut -f 2- -d" " data/${train_dev}/text | spm_encode --model=${bpemodel}.model --output_format=piece | perl -pe 's/\n/ <eos> /g' \
-        > ${lmdatadir}/valid.txt
-    # use only 1 gpu
-    if [ ${ngpu} -gt 1 ]; then
-        echo "LM training does not support multi-gpu. signle gpu will be used."
-    fi
-    ${cuda_cmd} ${lmexpdir}/train.log \
-        lm_train.py \
-        --ngpu ${ngpu} \
-        --backend ${backend} \
-        --verbose 1 \
-        --outdir ${lmexpdir} \
-        --train-label ${lmdatadir}/train.txt \
-        --valid-label ${lmdatadir}/valid.txt \
-        --epoch 60 \
-        --batchsize 256 \
-        --dict ${dict}
-fi
+#if [ ${stage} -le 3 ]; then
+#    echo "stage 3: LM Preparation"
+#    lmdatadir=data/local/lm_train_${bpemode}${nbpe}
+#    mkdir -p ${lmdatadir}
+#    spm_encode --model=${bpemodel}.model --output_format=piece < data/lang_char/input.txt | perl -pe 's/\n/ <eos> /g' \
+#        > ${lmdatadir}/train.txt
+#        cut -f 2- -d" " data/${train_dev}/text | spm_encode --model=${bpemodel}.model --output_format=piece | perl -pe 's/\n/ <eos> /g' \
+#        > ${lmdatadir}/valid.txt
+#    # use only 1 gpu
+#    if [ ${ngpu} -gt 1 ]; then
+#        echo "LM training does not support multi-gpu. signle gpu will be used."
+#    fi
+#    ${cuda_cmd} ${lmexpdir}/train.log \
+#        lm_train.py \
+#        --ngpu ${ngpu} \
+#        --backend ${backend} \
+#        --verbose 1 \
+#        --outdir ${lmexpdir} \
+#        --train-label ${lmdatadir}/train.txt \
+#        --valid-label ${lmdatadir}/valid.txt \
+#        --epoch 60 \
+#        --batchsize 256 \
+#        --dict ${dict}
+#fi
 
 if [ -z ${tag} ]; then
     expdir=exp/${train_set}_${backend}_${etype}_e${elayers}_subsample${subsample}_unit${eunits}_proj${eprojs}_d${dlayers}_unit${dunits}_${atype}${adim}_aconvc${aconv_chans}_aconvf${aconv_filts}_mtlalpha${mtlalpha}_${opt}_bs${batchsize}_mli${maxlen_in}_mlo${maxlen_out}_${bpemode}${nbpe}
