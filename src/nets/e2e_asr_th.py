@@ -1625,6 +1625,7 @@ class Decoder(torch.nn.Module):
             history_embedder_z_list.append(self.zero_state(hs_pad))
         att_w = None
         z_all = []
+        history_all = []
         self.att.reset()  # reset pre-computation of h
 
         # pre-computation of embedding
@@ -1632,15 +1633,20 @@ class Decoder(torch.nn.Module):
 
         # loop for an output sequence
         for i in six.moves.range(olength):
-            att_c, att_w = self.att(hs_pad, hlens, torch.cat([z_list[0], history_embedder_z_list[0]], dim=-1), att_w)
-            ey = torch.cat((eys[:, i, :], att_c), dim=1)  # utt x (zdim + hdim)
-            z_list[0], c_list[0] = self.decoder[0](ey, (z_list[0], c_list[0]))
             history_embedder_z_list[0], history_embedder_c_list[0] = self.history_embedder[0](eys[:, i, :], (history_embedder_z_list[0], history_embedder_c_list[0]))
+            for l in six.moves.range(1, self.dlayers):
+                history_embedder_z_list[l], history_embedder_c_list[l] = self.history_embedder[l](
+                    history_embedder_z_list[l - 1], (history_embedder_z_list[l], history_embedder_c_list[l]))
+            history_all.append(history_embedder_z_list[-1])
+
+        # loop for an output sequence
+        for i in six.moves.range(olength):
+            att_c, att_w = self.att(hs_pad, hlens, history_embedder_z_list[0], att_w)
+            ey = torch.cat((history_all[-1], att_c), dim=1)  # utt x (zdim + hdim)
+            z_list[0], c_list[0] = self.decoder[0](ey, (z_list[0], c_list[0]))
             for l in six.moves.range(1, self.dlayers):
                 z_list[l], c_list[l] = self.decoder[l](
                     z_list[l - 1], (z_list[l], c_list[l]))
-                history_embedder_z_list[l], history_embedder_c_list[l] = self.history_embedder[l](
-                    history_embedder_z_list[l - 1], (history_embedder_z_list[l], history_embedder_c_list[l]))
             z_all.append(torch.cat([z_list[-1], history_embedder_z_list[-1]], dim=-1))
 
         z_all = torch.stack(z_all, dim=1).view(batch * olength, self.dunits * 2)
