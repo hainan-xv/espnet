@@ -1642,7 +1642,7 @@ class Decoder(torch.nn.Module):
         # loop for an output sequence
         for i in six.moves.range(olength):
             att_c, att_w = self.att(hs_pad, hlens, z_list[0], att_w)
-            ey = torch.cat((history_all[-1], att_c), dim=1)  # utt x (zdim + hdim)
+            ey = torch.cat((history_all[i], att_c), dim=1)  # utt x (zdim + hdim)
             z_list[0], c_list[0] = self.decoder[0](ey, (z_list[0], c_list[0]))
             for l in six.moves.range(1, self.dlayers):
                 z_list[l], c_list[l] = self.decoder[l](
@@ -1756,6 +1756,10 @@ class Decoder(torch.nn.Module):
                 vy[0] = hyp['yseq'][i]
 #                old_ey = self.embed(vy)           # utt list (1) x zdim
 #                old_ey.unsqueeze(0)
+                ey = self.embed(vy)           # utt list (1) x zdim
+                ey.unsqueeze(0)
+
+                history_embedder_z_list[0], history_embedder_c_list[0] = self.history_embedder[0](ey, (hyp['history_embedder_z_prev'][0], hyp['history_embedder_c_prev'][0]))
 
                 for l in six.moves.range(1, self.dlayers):
                     history_embedder_z_list[l], history_embedder_c_list[l] = self.history_embedder[l](
