@@ -21,8 +21,8 @@ do_delta=false
 
 # network archtecture
 # encoder related
-etype=blstm     # encoder architecture type
-elayers=4
+etype=blstmp     # encoder architecture type
+elayers=6
 eunits=320
 eprojs=320
 subsample=1_2_2_1_1 # skip every n frame from input to nth layers
@@ -45,7 +45,7 @@ maxlen_out=150 # if output length > maxlen_out, batchsize is automatically reduc
 
 # optimization related
 opt=adadelta
-epochs=10
+epochs=15
 
 # rnnlm related
 lm_weight=0.3
@@ -277,7 +277,6 @@ if [ ${stage} -le 5 ]; then
             --maxlenratio ${maxlenratio} \
             --minlenratio ${minlenratio} \
             --ctc-weight ${ctc_weight} \
-            --rnnlm ${lmexpdir}/rnnlm.model.best \
             --lm-weight ${lm_weight} \
             &
         wait
