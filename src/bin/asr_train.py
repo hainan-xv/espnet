@@ -16,6 +16,7 @@ import numpy as np
 
 
 def main():
+    print ("training with history embedder")
     parser = argparse.ArgumentParser()
     # general configuration
     parser.add_argument('--ngpu', default=0, type=int,
