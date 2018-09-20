@@ -197,7 +197,7 @@ class E2E(torch.nn.Module):
         elif args.atype == 'add':
             self.att = AttAdd(args.eprojs, args.dunits, args.adim)
         elif args.atype == 'location':
-            self.att = AttLoc(args.eprojs, args.dunits * 2,
+            self.att = AttLoc(args.eprojs, args.dunits,
                               args.adim, args.aconv_chans, args.aconv_filts)
         elif args.atype == 'location2d':
             self.att = AttLoc2D(args.eprojs, args.dunits,
@@ -1559,7 +1559,7 @@ class Decoder(torch.nn.Module):
             self.history_embedder += [torch.nn.LSTMCell(dunits, dunits)]
 
         self.ignore_id = -1
-        self.output = torch.nn.Linear(dunits * 2, odim)
+        self.output = torch.nn.Linear(dunits, odim)
 
         self.loss = None
         self.att = att
@@ -1641,15 +1641,15 @@ class Decoder(torch.nn.Module):
 
         # loop for an output sequence
         for i in six.moves.range(olength):
-            att_c, att_w = self.att(hs_pad, hlens, history_embedder_z_list[0], att_w)
+            att_c, att_w = self.att(hs_pad, hlens, z_list[0], att_w)
             ey = torch.cat((history_all[-1], att_c), dim=1)  # utt x (zdim + hdim)
             z_list[0], c_list[0] = self.decoder[0](ey, (z_list[0], c_list[0]))
             for l in six.moves.range(1, self.dlayers):
                 z_list[l], c_list[l] = self.decoder[l](
                     z_list[l - 1], (z_list[l], c_list[l]))
-            z_all.append(torch.cat([z_list[-1], history_embedder_z_list[-1]], dim=-1))
+            z_all.append(z_list[-1])
 
-        z_all = torch.stack(z_all, dim=1).view(batch * olength, self.dunits * 2)
+        z_all = torch.stack(z_all, dim=1).view(batch * olength, self.dunits)
         # compute loss
         y_all = self.output(z_all)
         self.loss = F.cross_entropy(y_all, ys_out_pad.view(-1),
@@ -1754,20 +1754,24 @@ class Decoder(torch.nn.Module):
             for hyp in hyps:
                 vy.unsqueeze(1)
                 vy[0] = hyp['yseq'][i]
-                old_ey = self.embed(vy)           # utt list (1) x zdim
-                old_ey.unsqueeze(0)
-                att_c, att_w = self.att(h.unsqueeze(0), [h.size(0)], torch.cat([hyp['z_prev'][0], hyp['history_embedder_z_prev'][0]], dim=-1), hyp['a_prev'])
-                ey = torch.cat((old_ey, att_c), dim=1)   # utt(1) x (zdim + hdim)
-                z_list[0], c_list[0] = self.decoder[0](ey, (hyp['z_prev'][0], hyp['c_prev'][0]))
-                history_embedder_z_list[0], history_embedder_c_list[0] = self.history_embedder[0](old_ey, (hyp['history_embedder_z_prev'][0], hyp['history_embedder_c_prev'][0]))
+#                old_ey = self.embed(vy)           # utt list (1) x zdim
+#                old_ey.unsqueeze(0)
+
                 for l in six.moves.range(1, self.dlayers):
-                    z_list[l], c_list[l] = self.decoder[l](
-                        z_list[l - 1], (hyp['z_prev'][l], hyp['c_prev'][l]))
                     history_embedder_z_list[l], history_embedder_c_list[l] = self.history_embedder[l](
                         history_embedder_z_list[l - 1], (hyp['history_embedder_z_prev'][l], hyp['history_embedder_c_prev'][l]))
 
+                att_c, att_w = self.att(h.unsqueeze(0), [h.size(0)], hyp['z_prev'][0], hyp['a_prev'])
+
+                ey = torch.cat((history_embedder_z_list[-1], att_c), dim=1)   # utt(1) x (zdim + hdim)
+
+                z_list[0], c_list[0] = self.decoder[0](ey, (hyp['z_prev'][0], hyp['c_prev'][0]))
+                for l in six.moves.range(1, self.dlayers):
+                    z_list[l], c_list[l] = self.decoder[l](
+                        z_list[l - 1], (hyp['z_prev'][l], hyp['c_prev'][l]))
+
                 # get nbest local scores and their ids
-                local_att_scores = F.log_softmax(self.output(torch.cat([z_list[-1], history_embedder_z_list[-1]], dim=-1)), dim=1)
+                local_att_scores = F.log_softmax(self.output(z_list[-1], dim=1))
                 if rnnlm:
                     rnnlm_state, local_lm_scores = rnnlm.predict(hyp['rnnlm_prev'], vy)
                     local_scores = local_att_scores + recog_args.lm_weight * local_lm_scores
@@ -1915,15 +1919,17 @@ class Decoder(torch.nn.Module):
 
         # loop for an output sequence
         for i in six.moves.range(olength):
-            att_c, att_w = self.att(hs_pad, hlen, torch.cat([z_list[0], history_embedder_z_list[0]], dim=-1), att_w)
-            ey = torch.cat((eys[:, i, :], att_c), dim=1)  # utt x (zdim + hdim)
-            z_list[0], c_list[0] = self.decoder[0](ey, (z_list[0], c_list[0]))
+            att_c, att_w = self.att(hs_pad, hlen, z_list[0], att_w)
             history_embedder_z_list[0], history_embedder_c_list[0] = self.history_embedder[0](eys[:, i, :], (history_embedder_z_list[0], history_embedder_c_list[0]))
+            for l in six.moves.range(1, self.dlayers):
+                history_embedder_z_list[l], history_embedder_c_list[l] = self.history_embedder[l](
+                    history_embedder_z_list[l - 1], (history_embedder_z_list[l], history_embedder_c_list[l]))
+
+            ey = torch.cat((history_embedder_z_list[-1], att_c), dim=1)  # utt x (zdim + hdim)
+            z_list[0], c_list[0] = self.decoder[0](ey, (z_list[0], c_list[0]))
             for l in six.moves.range(1, self.dlayers):
                 z_list[l], c_list[l] = self.decoder[l](
                     z_list[l - 1], (z_list[l], c_list[l]))
-                history_embedder_z_list[l], history_embedder_c_list[l] = self.history_embedder[l](
-                    history_embedder_z_list[l - 1], (history_embedder_z_list[l], history_embedder_c_list[l]))
             att_ws.append(att_w)
 
         # convert to numpy array with the shape (B, Lmax, Tmax)
