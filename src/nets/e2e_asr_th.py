@@ -278,8 +278,9 @@ class E2E(torch.nn.Module):
         self.dec.embed.weight.data.normal_(0, 1)
         # forget-bias = 1.0
         # https://discuss.pytorch.org/t/set-forget-gate-bias-of-lstm/1745
-        for l in six.moves.range(len(self.dec.decoder)):
-            set_forget_bias_to_one(self.dec.decoder[l].bias_ih)
+        for l in six.moves.range(len(self.dec.history_embedder)):
+            set_forget_bias_to_one(self.dec.history_embedder[l].bias_ih)
+#            set_forget_bias_to_one(self.dec.decoder[l].bias_ih)
 
     def forward(self, xs_pad, ilens, ys_pad):
         '''E2E forward
@@ -1556,8 +1557,10 @@ class Decoder(torch.nn.Module):
         self.history_embedder += [torch.nn.LSTMCell(dunits, dunits)]
 
         for l in six.moves.range(1, self.dlayers):
-            self.decoder += [torch.nn.Linear(dunits, dunits)]
             self.history_embedder += [torch.nn.LSTMCell(dunits, dunits)]
+
+        for l in six.moves.range(1, 4 * self.dlayers):
+            self.decoder += [torch.nn.Linear(dunits, dunits)]
 
         self.ignore_id = -1
         self.output = torch.nn.Linear(dunits, odim)
@@ -1620,10 +1623,13 @@ class Decoder(torch.nn.Module):
         history_embedder_z_list = [self.zero_state(hs_pad)]
         for l in six.moves.range(1, self.dlayers):
             c_list.append(self.zero_state(hs_pad))
-            z_list.append(self.zero_state(hs_pad))
 
             history_embedder_c_list.append(self.zero_state(hs_pad))
             history_embedder_z_list.append(self.zero_state(hs_pad))
+
+        for l in six.moves.range(1, 4 * self.dlayers):
+            z_list.append(self.zero_state(hs_pad))
+
         att_w = None
         z_all = []
         history_all = []
@@ -1644,9 +1650,9 @@ class Decoder(torch.nn.Module):
         for i in six.moves.range(olength):
             att_c, att_w = self.att(hs_pad, hlens, z_list[0], att_w)
             ey = torch.cat((history_all[i], att_c), dim=1)  # utt x (zdim + hdim)
-            z_list[0] = self.decoder[0](ey))
+            z_list[0] = self.decoder[0](ey)
             z_list[0] = self.sigmoid(z_list[0])
-            for l in six.moves.range(1, self.dlayers):
+            for l in six.moves.range(1, 4 * self.dlayers):
                 z_list[l] = self.decoder[l](z_list[l - 1])
                 z_list[l] = self.sigmoid(z_list[l])
             z_all.append(z_list[-1])
@@ -1706,9 +1712,10 @@ class Decoder(torch.nn.Module):
         history_embedder_z_list = [self.zero_state(h.unsqueeze(0))]
         for l in six.moves.range(1, self.dlayers):
             c_list.append(self.zero_state(h.unsqueeze(0)))
-            z_list.append(self.zero_state(h.unsqueeze(0)))
             history_embedder_c_list.append(self.zero_state(h.unsqueeze(0)))
             history_embedder_z_list.append(self.zero_state(h.unsqueeze(0)))
+        for l in six.moves.range(1, 4 * self.dlayers):
+            z_list.append(self.zero_state(h.unsqueeze(0)))
         a = None
         self.att.reset()  # reset pre-computation of h
 
@@ -1773,12 +1780,13 @@ class Decoder(torch.nn.Module):
 
                 z_list[0] = self.decoder[0](ey)
                 z_list[0] = self.sigmoid(z_list[0])
-                for l in six.moves.range(1, self.dlayers):
+                for l in six.moves.range(1, 4 * self.dlayers):
                     z_list[l] = self.decoder[l](z_list[l - 1])
                     z_list[l] = self.sigmoid(z_list[l])
 
                 # get nbest local scores and their ids
-                local_att_scores = F.log_softmax(self.output(z_list[-1], dim=1))
+#                local_att_scores = F.log_softmax(self.output(z_list[-1]))
+                local_att_scores = F.log_softmax(self.output(z_list[-1]), dim=1)
                 if rnnlm:
                     rnnlm_state, local_lm_scores = rnnlm.predict(hyp['rnnlm_prev'], vy)
                     local_scores = local_att_scores + recog_args.lm_weight * local_lm_scores
@@ -1914,9 +1922,11 @@ class Decoder(torch.nn.Module):
         history_embedder_z_list = [self.zero_state(hs_pad)]
         for l in six.moves.range(1, self.dlayers):
             c_list.append(self.zero_state(hs_pad))
-            z_list.append(self.zero_state(hs_pad))
             history_embedder_c_list.append(self.zero_state(hs_pad))
             history_embedder_z_list.append(self.zero_state(hs_pad))
+        for l in six.moves.range(1, 4 * self.dlayers):
+            z_list.append(self.zero_state(hs_pad))
+
         att_w = None
         att_ws = []
         self.att.reset()  # reset pre-computation of h
@@ -1935,7 +1945,7 @@ class Decoder(torch.nn.Module):
             ey = torch.cat((history_embedder_z_list[-1], att_c), dim=1)  # utt x (zdim + hdim)
             z_list[0] = self.decoder[0](ey)
             z_list[0] = self.sigmoid(z_list[0])
-            for l in six.moves.range(1, self.dlayers):
+            for l in six.moves.range(1, 4 * self.dlayers):
                 z_list[l] = self.decoder[l](z_list[l - 1])
                 z_list[l] = self.sigmoid(z_list[l])
             att_ws.append(att_w)
