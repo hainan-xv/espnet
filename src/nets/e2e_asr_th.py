@@ -278,8 +278,8 @@ class E2E(torch.nn.Module):
         self.dec.embed.weight.data.normal_(0, 1)
         # forget-bias = 1.0
         # https://discuss.pytorch.org/t/set-forget-gate-bias-of-lstm/1745
-        for l in six.moves.range(len(self.dec.decoder)):
-            set_forget_bias_to_one(self.dec.decoder[l].bias_ih)
+        for l in six.moves.range(len(self.dec.history_embedder)):
+            set_forget_bias_to_one(self.dec.history_embedder[l].bias_ih)
 
     def forward(self, xs_pad, ilens, ys_pad):
         '''E2E forward
@@ -1549,14 +1549,18 @@ class Decoder(torch.nn.Module):
         self.dlayers = dlayers
         self.embed = torch.nn.Embedding(odim, dunits)
         self.decoder = torch.nn.ModuleList()
-        self.decoder += [torch.nn.LSTMCell(dunits + eprojs, dunits)]
+        self.decoder += [torch.nn.Linear(eprojs, dunits)]
+        self.sigmoid = torch.nn.Sigmoid()
 
         self.history_embedder = torch.nn.ModuleList()
         self.history_embedder += [torch.nn.LSTMCell(dunits, dunits)]
 
         for l in six.moves.range(1, self.dlayers):
-            self.decoder += [torch.nn.LSTMCell(dunits, dunits)]
             self.history_embedder += [torch.nn.LSTMCell(dunits, dunits)]
+        for l in six.moves.range(1, 1 * 1 * self.dlayers):
+            self.decoder += [torch.nn.Linear(dunits, dunits)]
+
+        self.unigram = torch.nn.Linear(1, odim)
 
         self.ignore_id = -1
         self.output = torch.nn.Linear(dunits, odim)
@@ -1618,11 +1622,13 @@ class Decoder(torch.nn.Module):
         history_embedder_c_list = [self.zero_state(hs_pad)]
         history_embedder_z_list = [self.zero_state(hs_pad)]
         for l in six.moves.range(1, self.dlayers):
+            history_embedder_c_list.append(self.zero_state(hs_pad))
+            history_embedder_z_list.append(self.zero_state(hs_pad))
+
+        for l in six.moves.range(1, 1 * 1 * self.dlayers):
             c_list.append(self.zero_state(hs_pad))
             z_list.append(self.zero_state(hs_pad))
 
-            history_embedder_c_list.append(self.zero_state(hs_pad))
-            history_embedder_z_list.append(self.zero_state(hs_pad))
         att_w = None
         z_all = []
         z_all_lm = []
@@ -1635,11 +1641,13 @@ class Decoder(torch.nn.Module):
         for i in six.moves.range(olength):
             att_c, att_w = self.att(hs_pad, hlens, torch.cat([z_list[0], history_embedder_z_list[0]], dim=-1), att_w)
             ey = torch.cat((eys[:, i, :], att_c), dim=1)  # utt x (zdim + hdim)
-            z_list[0], c_list[0] = self.decoder[0](ey, (z_list[0], c_list[0]))
+            z_list[0] = self.decoder[0](att_c)
             history_embedder_z_list[0], history_embedder_c_list[0] = self.history_embedder[0](eys[:, i, :], (history_embedder_z_list[0], history_embedder_c_list[0]))
+            for l in six.moves.range(1, 1 * 1 * self.dlayers):
+                z_list[l] = self.decoder[l](z_list[l - 1])
+                z_list[l] = self.sigmoid(z_list[l])
+
             for l in six.moves.range(1, self.dlayers):
-                z_list[l], c_list[l] = self.decoder[l](
-                    z_list[l - 1], (z_list[l], c_list[l]))
                 history_embedder_z_list[l], history_embedder_c_list[l] = self.history_embedder[l](
                     history_embedder_z_list[l - 1], (history_embedder_z_list[l], history_embedder_c_list[l]))
             z_all.append(z_list[-1])
@@ -1650,11 +1658,13 @@ class Decoder(torch.nn.Module):
         # compute loss
         y_all = self.output(z_all)
         y_all_lm = self.output(z_all_lm)
+
+        unigram_all = self.unigram(to_cuda(self, torch.zeros(batch * olength, 1)))
+
         self.loss = F.cross_entropy(y_all, ys_out_pad.view(-1),
                                     ignore_index=self.ignore_id,
-                                    size_average=True) + F.cross_entropy(y_all_lm, ys_out_pad.view(-1),
-                                                                         ignore_index=self.ignore_id,
-                                                                         size_average=True)
+                                    size_average=True)
+
         # -1: eos, which is removed in the loss computation
         self.loss *= (np.mean([len(x) for x in ys_in]) - 1)
         acc = th_accuracy(y_all, ys_out_pad, ignore_label=self.ignore_id)
@@ -1682,6 +1692,12 @@ class Decoder(torch.nn.Module):
                 self.vlabeldist = to_cuda(self, torch.from_numpy(self.labeldist))
             loss_reg = - torch.sum((F.log_softmax(y_all, dim=1) * self.vlabeldist).view(-1), dim=0) / len(ys_in)
             self.loss = (1. - self.lsm_weight) * self.loss + self.lsm_weight * loss_reg
+
+        self.loss += F.cross_entropy(y_all_lm, ys_out_pad.view(-1),
+                                     ignore_index=self.ignore_id,
+                                     size_average=True)
+        self.loss += F.cross_entropy(unigram_all, ys_out_pad.view(-1),
+                                     ignore_index=self.ignore_id, size_average=True)
 
         return self.loss, acc
 
@@ -1758,16 +1774,22 @@ class Decoder(torch.nn.Module):
                 old_ey.unsqueeze(0)
                 att_c, att_w = self.att(h.unsqueeze(0), [h.size(0)], torch.cat([hyp['z_prev'][0], hyp['history_embedder_z_prev'][0]], dim=-1), hyp['a_prev'])
                 ey = torch.cat((old_ey, att_c), dim=1)   # utt(1) x (zdim + hdim)
-                z_list[0], c_list[0] = self.decoder[0](ey, (hyp['z_prev'][0], hyp['c_prev'][0]))
+
+                z_list[0] = self.decoder[0](att_c)
+                z_list[0] = self.sigmoid(z_list[0])
+
                 history_embedder_z_list[0], history_embedder_c_list[0] = self.history_embedder[0](old_ey, (hyp['history_embedder_z_prev'][0], hyp['history_embedder_c_prev'][0]))
                 for l in six.moves.range(1, self.dlayers):
-                    z_list[l], c_list[l] = self.decoder[l](
-                        z_list[l - 1], (hyp['z_prev'][l], hyp['c_prev'][l]))
                     history_embedder_z_list[l], history_embedder_c_list[l] = self.history_embedder[l](
                         history_embedder_z_list[l - 1], (hyp['history_embedder_z_prev'][l], hyp['history_embedder_c_prev'][l]))
 
+                for l in six.moves.range(1, 1 * 1 * self.dlayers):
+                    z_list[l] = self.decoder[l](z_list[l - 1])
+                    z_list[l] = self.sigmoid(z_list[l])
+
                 # get nbest local scores and their ids
-                local_att_scores = F.log_softmax(self.output(z_list[-1])) + F.log_softmax(self.output(history_embedder_z_list[-1]))
+                local_att_scores = F.log_softmax(self.output(z_list[-1]))
+                lm_scores = F.log_softmax(self.output(history_embedder_z_list[-1])) - F.log_softmax(self.unigram(torch.zeros(1, 1))) # TODO(hxu)
                 if rnnlm:
                     rnnlm_state, local_lm_scores = rnnlm.predict(hyp['rnnlm_prev'], vy)
                     local_scores = local_att_scores + recog_args.lm_weight * local_lm_scores
@@ -1781,7 +1803,7 @@ class Decoder(torch.nn.Module):
                         hyp['yseq'], local_best_ids[0], hyp['ctc_state_prev'])
                     local_scores = \
                         (1.0 - ctc_weight) * local_att_scores[:, local_best_ids[0]] \
-                        + ctc_weight * torch.from_numpy(ctc_scores - hyp['ctc_score_prev'])
+                        + ctc_weight * torch.from_numpy(ctc_scores - hyp['ctc_score_prev']) + lm_scores
                     if rnnlm:
                         local_scores += recog_args.lm_weight * local_lm_scores[:, local_best_ids[0]]
                     local_best_scores, joint_best_ids = torch.topk(local_scores, beam, dim=1)
@@ -1917,13 +1939,14 @@ class Decoder(torch.nn.Module):
         for i in six.moves.range(olength):
             att_c, att_w = self.att(hs_pad, hlen, torch.cat([z_list[0], history_embedder_z_list[0]], dim=-1), att_w)
             ey = torch.cat((eys[:, i, :], att_c), dim=1)  # utt x (zdim + hdim)
-            z_list[0], c_list[0] = self.decoder[0](ey, (z_list[0], c_list[0]))
+            z_list[0] = self.decoder[0](att_c)
             history_embedder_z_list[0], history_embedder_c_list[0] = self.history_embedder[0](eys[:, i, :], (history_embedder_z_list[0], history_embedder_c_list[0]))
             for l in six.moves.range(1, self.dlayers):
-                z_list[l], c_list[l] = self.decoder[l](
-                    z_list[l - 1], (z_list[l], c_list[l]))
                 history_embedder_z_list[l], history_embedder_c_list[l] = self.history_embedder[l](
                     history_embedder_z_list[l - 1], (history_embedder_z_list[l], history_embedder_c_list[l]))
+            for l in six.moves.range(1, 1 * 1 *self.dlayers):
+                z_list[l] = self.decoder[l](z_list[l - 1])
+                z_list[l] = self.sigmoid(z_list[l])
             att_ws.append(att_w)
 
         # convert to numpy array with the shape (B, Lmax, Tmax)
