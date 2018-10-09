@@ -1559,7 +1559,7 @@ class Decoder(torch.nn.Module):
             self.history_embedder += [torch.nn.LSTMCell(dunits, dunits)]
 
         self.ignore_id = -1
-        self.output = torch.nn.Linear(dunits * 2, odim)
+        self.output = torch.nn.Linear(dunits, odim)
 
         self.loss = None
         self.att = att
@@ -1625,6 +1625,7 @@ class Decoder(torch.nn.Module):
             history_embedder_z_list.append(self.zero_state(hs_pad))
         att_w = None
         z_all = []
+        z_all_lm = []
         self.att.reset()  # reset pre-computation of h
 
         # pre-computation of embedding
@@ -1641,14 +1642,19 @@ class Decoder(torch.nn.Module):
                     z_list[l - 1], (z_list[l], c_list[l]))
                 history_embedder_z_list[l], history_embedder_c_list[l] = self.history_embedder[l](
                     history_embedder_z_list[l - 1], (history_embedder_z_list[l], history_embedder_c_list[l]))
-            z_all.append(torch.cat([z_list[-1], history_embedder_z_list[-1]], dim=-1))
+            z_all.append(z_list[-1])
+            z_all_lm.append(history_embedder_z_list[-1])
 
-        z_all = torch.stack(z_all, dim=1).view(batch * olength, self.dunits * 2)
+        z_all = torch.stack(z_all, dim=1).view(batch * olength, self.dunits)
+        z_all_lm = torch.stack(z_all_lm, dim=1).view(batch * olength, self.dunits)
         # compute loss
         y_all = self.output(z_all)
+        y_all_lm = self.output(z_all_lm)
         self.loss = F.cross_entropy(y_all, ys_out_pad.view(-1),
                                     ignore_index=self.ignore_id,
-                                    size_average=True)
+                                    size_average=True) + F.cross_entropy(y_all_lm, ys_out_pad.view(-1),
+                                                                         ignore_index=self.ignore_id,
+                                                                         size_average=True)
         # -1: eos, which is removed in the loss computation
         self.loss *= (np.mean([len(x) for x in ys_in]) - 1)
         acc = th_accuracy(y_all, ys_out_pad, ignore_label=self.ignore_id)
@@ -1761,7 +1767,7 @@ class Decoder(torch.nn.Module):
                         history_embedder_z_list[l - 1], (hyp['history_embedder_z_prev'][l], hyp['history_embedder_c_prev'][l]))
 
                 # get nbest local scores and their ids
-                local_att_scores = F.log_softmax(self.output(torch.cat([z_list[-1], history_embedder_z_list[-1]], dim=-1)), dim=1)
+                local_att_scores = F.log_softmax(self.output(z_list[-1])) + F.log_softmax(self.output(history_embedder_z_list[-1]))
                 if rnnlm:
                     rnnlm_state, local_lm_scores = rnnlm.predict(hyp['rnnlm_prev'], vy)
                     local_scores = local_att_scores + recog_args.lm_weight * local_lm_scores
