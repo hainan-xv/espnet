@@ -1557,13 +1557,20 @@ class Decoder(torch.nn.Module):
         self.history_embedder = torch.nn.ModuleList()
         self.history_embedder += [torch.nn.LSTMCell(dunits, dunits)]
 
+        self.ac_helper = torch.nn.ModuleList()
+        self.ac_helper += [torch.nn.LSTMCell(eprojs, dunits)]
+
         for l in six.moves.range(1, self.dlayers):
             self.decoder += [torch.nn.LSTMCell(dunits, dunits)]
             self.decoder_helper += [torch.nn.LSTMCell(dunits, dunits)]
             self.history_embedder += [torch.nn.LSTMCell(dunits, dunits)]
+            self.ac_helper += [torch.nn.LSTMCell(dunits, dunits)]
 
         self.ignore_id = -1
         self.output = torch.nn.Linear(dunits, odim)
+        self.output_helper = torch.nn.Linear(dunits, odim)
+        self.output_lm = torch.nn.Linear(dunits, odim)
+        self.output_ac = torch.nn.Linear(dunits, odim)
 
         self.loss = None
         self.att = att
@@ -1619,6 +1626,9 @@ class Decoder(torch.nn.Module):
         c_list = [self.zero_state(hs_pad)]
         z_list = [self.zero_state(hs_pad)]
 
+        ac_c_list = [self.zero_state(hs_pad)]
+        ac_z_list = [self.zero_state(hs_pad)]
+
         helper_c_list = [self.zero_state(hs_pad)]
         helper_z_list = [self.zero_state(hs_pad)]
 
@@ -1628,6 +1638,9 @@ class Decoder(torch.nn.Module):
             c_list.append(self.zero_state(hs_pad))
             z_list.append(self.zero_state(hs_pad))
 
+            ac_c_list.append(self.zero_state(hs_pad))
+            ac_z_list.append(self.zero_state(hs_pad))
+
             helper_c_list.append(self.zero_state(hs_pad))
             helper_z_list.append(self.zero_state(hs_pad))
 
@@ -1635,6 +1648,7 @@ class Decoder(torch.nn.Module):
             history_embedder_z_list.append(self.zero_state(hs_pad))
         att_w = None
         z_all = []
+        z_all_ac = []
         z_all_helper = []
         z_all_lm = []
         self.att.reset()  # reset pre-computation of h
@@ -1645,29 +1659,38 @@ class Decoder(torch.nn.Module):
         # loop for an output sequence
         for i in six.moves.range(olength):
             att_c, att_w = self.att(hs_pad, hlens, z_list[0], att_w)
-            ey = torch.cat((eys[:, i, :], att_c), dim=1)  # utt x (zdim + hdim)
-            helper_z_list[0], helper_c_list[0] = self.decoder_helper[0](eys[:, i, :], (z_list[0], c_list[0])) 
+            ey = torch.cat((eys[:, i, :], att_c.detach()), dim=1)  # utt x (zdim + hdim)
+            helper_z_list[0], helper_c_list[0] = self.decoder_helper[0](eys[:, i, :], (z_list[0].detach(), c_list[0].detach())) 
+            ac_z_list[0], ac_c_list[0] = self.ac_helper[0](att_c, (ac_z_list[0], ac_c_list[0]))
             z_list[0], c_list[0] = self.decoder[0](ey, (z_list[0], c_list[0]))
             history_embedder_z_list[0], history_embedder_c_list[0] = self.history_embedder[0](eys[:, i, :], (history_embedder_z_list[0], history_embedder_c_list[0]))
             for l in six.moves.range(1, self.dlayers):
                 z_list[l], c_list[l] = self.decoder[l](
                     z_list[l - 1], (z_list[l], c_list[l]))
+                ac_z_list[l], ac_c_list[l] = self.ac_helper[l](
+                    ac_z_list[l - 1], (ac_z_list[l], ac_c_list[l]))
                 helper_z_list[l], helper_c_list[l] = self.decoder_helper[l](
                     helper_z_list[l - 1], (helper_z_list[l], helper_c_list[l]))
                 history_embedder_z_list[l], history_embedder_c_list[l] = self.history_embedder[l](
                     history_embedder_z_list[l - 1], (history_embedder_z_list[l], history_embedder_c_list[l]))
             z_all.append(z_list[-1])
+            z_all_ac.append(ac_z_list[-1])
             z_all_helper.append(helper_z_list[-1])
             z_all_lm.append(history_embedder_z_list[-1])
 
         z_all = torch.stack(z_all, dim=1).view(batch * olength, self.dunits)
+        z_all_ac = torch.stack(z_all_ac, dim=1).view(batch * olength, self.dunits)
         z_all_helper = torch.stack(z_all_helper, dim=1).view(batch * olength, self.dunits)
         z_all_lm = torch.stack(z_all_lm, dim=1).view(batch * olength, self.dunits)
         # compute loss
         y_all = self.output(z_all)
-        y_all_helper = self.output(z_all_helper)
-        y_all_lm = self.output(z_all_lm)
+        y_all_ac = self.output_ac(z_all_ac)
+        y_all_helper = self.output_helper(z_all_helper)
+        y_all_lm = self.output_lm(z_all_lm)
         self.loss = F.cross_entropy(y_all, ys_out_pad.view(-1),
+                                    ignore_index=self.ignore_id,
+                                    size_average=True)
+        self.ac_loss = F.cross_entropy(y_all_ac, ys_out_pad.view(-1),
                                     ignore_index=self.ignore_id,
                                     size_average=True)
         self.helper_loss = F.cross_entropy(y_all_helper, ys_out_pad.view(-1),
@@ -1676,11 +1699,13 @@ class Decoder(torch.nn.Module):
         self.rnnlm_loss = F.cross_entropy(y_all_lm, ys_out_pad.view(-1),
                                           ignore_index=self.ignore_id,
                                           size_average=True)
-        print("The 3 PPLs are")
-        print(torch.exp(self.loss))
-        print(torch.exp(self.helper_loss))
-        print(torch.exp(self.rnnlm_loss))
-        self.loss += self.helper_loss + self.rnnlm_loss
+        print("The 4 PPLs are")
+        print("e2e          :", torch.exp(self.loss))
+        print("e2e acoustic :", torch.exp(self.ac_loss))
+        print("e2e hidden lm:", torch.exp(self.helper_loss))
+        print("external lm  :", torch.exp(self.rnnlm_loss))
+#        self.loss = self.ac_loss
+        self.loss = self.loss + self.helper_loss + self.ac_loss + self.rnnlm_loss
 
         # -1: eos, which is removed in the loss computation
         self.loss *= (np.mean([len(x) for x in ys_in]) - 1)
