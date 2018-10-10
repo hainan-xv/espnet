@@ -279,6 +279,7 @@ class E2E(torch.nn.Module):
         # forget-bias = 1.0
         # https://discuss.pytorch.org/t/set-forget-gate-bias-of-lstm/1745
         for l in six.moves.range(len(self.dec.history_embedder)):
+            set_forget_bias_to_one(self.dec.phone_history_embedder[l].bias_ih)
             set_forget_bias_to_one(self.dec.history_embedder[l].bias_ih)
 
     def forward(self, xs_pad, ilens, ys_pad):
@@ -1555,6 +1556,9 @@ class Decoder(torch.nn.Module):
         self.history_embedder = torch.nn.ModuleList()
         self.history_embedder += [torch.nn.LSTMCell(dunits, dunits)]
 
+        self.phone_history_embedder = torch.nn.ModuleList()
+        self.phone_history_embedder += [torch.nn.LSTMCell(eprojs + dunits, dunits)]
+
         for l in six.moves.range(1, self.dlayers):
             self.history_embedder += [torch.nn.LSTMCell(dunits, dunits)]
         for l in six.moves.range(1, 1 * 1 * self.dlayers):
@@ -1621,9 +1625,14 @@ class Decoder(torch.nn.Module):
 
         history_embedder_c_list = [self.zero_state(hs_pad)]
         history_embedder_z_list = [self.zero_state(hs_pad)]
+
+        phone_history_embedder_c_list = [self.zero_state(hs_pad)]
+        phone_history_embedder_z_list = [self.zero_state(hs_pad)]
         for l in six.moves.range(1, self.dlayers):
             history_embedder_c_list.append(self.zero_state(hs_pad))
             history_embedder_z_list.append(self.zero_state(hs_pad))
+            phone_history_embedder_c_list.append(self.zero_state(hs_pad))
+            phone_history_embedder_z_list.append(self.zero_state(hs_pad))
 
         for l in six.moves.range(1, 1 * 1 * self.dlayers):
             c_list.append(self.zero_state(hs_pad))
@@ -1631,6 +1640,7 @@ class Decoder(torch.nn.Module):
 
         att_w = None
         z_all = []
+        z_all_phone = []
         z_all_lm = []
         self.att.reset()  # reset pre-computation of h
 
@@ -1639,9 +1649,10 @@ class Decoder(torch.nn.Module):
 
         # loop for an output sequence
         for i in six.moves.range(olength):
-            att_c, att_w = self.att(hs_pad, hlens, torch.cat([z_list[0], history_embedder_z_list[0]], dim=-1), att_w)
+            att_c, att_w = self.att(hs_pad, hlens, torch.cat([phone_history_embedder_z_list[0], history_embedder_z_list[0]], dim=-1), att_w)
             ey = torch.cat((eys[:, i, :], att_c), dim=1)  # utt x (zdim + hdim)
             z_list[0] = self.decoder[0](att_c)
+            phone_history_embedder_z_list[0], phone_history_embedder_c_list[0] = self.phone_history_embedder[0](ey, (phone_history_embedder_z_list[0], phone_history_embedder_c_list[0]))
             history_embedder_z_list[0], history_embedder_c_list[0] = self.history_embedder[0](eys[:, i, :], (history_embedder_z_list[0], history_embedder_c_list[0]))
             for l in six.moves.range(1, 1 * 1 * self.dlayers):
                 z_list[l] = self.decoder[l](z_list[l - 1])
@@ -1650,8 +1661,11 @@ class Decoder(torch.nn.Module):
             for l in six.moves.range(1, self.dlayers):
                 history_embedder_z_list[l], history_embedder_c_list[l] = self.history_embedder[l](
                     history_embedder_z_list[l - 1], (history_embedder_z_list[l], history_embedder_c_list[l]))
+                phone_history_embedder_z_list[l], phone_history_embedder_c_list[l] = self.phone_history_embedder[l](
+                    phone_history_embedder_z_list[l - 1], (phone_history_embedder_z_list[l], phone_history_embedder_c_list[l]))
             z_all.append(z_list[-1])
             z_all_lm.append(history_embedder_z_list[-1])
+            z_all_phone.append(phone_history_embedder_z_list[-1])
 
         z_all = torch.stack(z_all, dim=1).view(batch * olength, self.dunits)
         z_all_lm = torch.stack(z_all_lm, dim=1).view(batch * olength, self.dunits)
@@ -1667,7 +1681,7 @@ class Decoder(torch.nn.Module):
 
         # -1: eos, which is removed in the loss computation
         self.loss *= (np.mean([len(x) for x in ys_in]) - 1)
-        acc = th_accuracy(y_all, ys_out_pad, ignore_label=self.ignore_id)
+        acc = th_accuracy(y_all + y_all_lm - unigram_all, ys_out_pad, ignore_label=self.ignore_id)
         logging.info('att loss:' + ''.join(str(self.loss.item()).split('\n')))
 
         # show predicted character sequence for debug
@@ -1693,11 +1707,21 @@ class Decoder(torch.nn.Module):
             loss_reg = - torch.sum((F.log_softmax(y_all, dim=1) * self.vlabeldist).view(-1), dim=0) / len(ys_in)
             self.loss = (1. - self.lsm_weight) * self.loss + self.lsm_weight * loss_reg
 
-        self.loss += F.cross_entropy(y_all_lm, ys_out_pad.view(-1),
+        self.lm_loss = F.cross_entropy(y_all_lm, ys_out_pad.view(-1),
                                      ignore_index=self.ignore_id,
                                      size_average=True)
-        self.loss += F.cross_entropy(unigram_all, ys_out_pad.view(-1),
+        self.unigram_loss = F.cross_entropy(unigram_all, ys_out_pad.view(-1),
                                      ignore_index=self.ignore_id, size_average=True)
+        
+#        print("3 losses are,", torch.exp(self.loss / (np.mean([len(x) for x in ys_in]) - 1)), torch.exp(self.lm_loss), torch.exp(self.unigram_loss))   ## TODO(hxu)
+        self.loss += (self.lm_loss + self.unigram_loss) * (np.mean([len(x) for x in ys_in]) - 1)
+#        self.loss += self.lm_loss + self.unigram_loss
+
+#        self.loss += F.cross_entropy(y_all_lm, ys_out_pad.view(-1),
+#                                     ignore_index=self.ignore_id,
+#                                     size_average=True)
+#        self.loss += F.cross_entropy(unigram_all, ys_out_pad.view(-1),
+#                                     ignore_index=self.ignore_id, size_average=True)
 
         return self.loss, acc
 
@@ -1718,11 +1742,15 @@ class Decoder(torch.nn.Module):
         z_list = [self.zero_state(h.unsqueeze(0))]
         history_embedder_c_list = [self.zero_state(h.unsqueeze(0))]
         history_embedder_z_list = [self.zero_state(h.unsqueeze(0))]
+        phone_history_embedder_c_list = [self.zero_state(h.unsqueeze(0))]
+        phone_history_embedder_z_list = [self.zero_state(h.unsqueeze(0))]
         for l in six.moves.range(1, self.dlayers):
             c_list.append(self.zero_state(h.unsqueeze(0)))
             z_list.append(self.zero_state(h.unsqueeze(0)))
             history_embedder_c_list.append(self.zero_state(h.unsqueeze(0)))
             history_embedder_z_list.append(self.zero_state(h.unsqueeze(0)))
+            phone_history_embedder_c_list.append(self.zero_state(h.unsqueeze(0)))
+            phone_history_embedder_z_list.append(self.zero_state(h.unsqueeze(0)))
         a = None
         self.att.reset()  # reset pre-computation of h
 
@@ -1750,7 +1778,8 @@ class Decoder(torch.nn.Module):
                    'z_prev': z_list, 'a_prev': a, 'rnnlm_prev': None}
         else:
             hyp = {'score': 0.0, 'yseq': [y], 'c_prev': c_list, 'z_prev': z_list, 'a_prev': a,
-                   'history_embedder_c_prev': history_embedder_c_list, 'history_embedder_z_prev': history_embedder_z_list}
+                   'history_embedder_c_prev': history_embedder_c_list, 'history_embedder_z_prev': history_embedder_z_list,
+                   'phone_history_embedder_c_prev': phone_history_embedder_c_list, 'phone_history_embedder_z_prev': phone_history_embedder_z_list}
         if lpz is not None:
             ctc_prefix_score = CTCPrefixScore(lpz.detach().numpy(), 0, self.eos, np)
             hyp['ctc_state_prev'] = ctc_prefix_score.initial_state()
@@ -1772,16 +1801,19 @@ class Decoder(torch.nn.Module):
                 vy[0] = hyp['yseq'][i]
                 old_ey = self.embed(vy)           # utt list (1) x zdim
                 old_ey.unsqueeze(0)
-                att_c, att_w = self.att(h.unsqueeze(0), [h.size(0)], torch.cat([hyp['z_prev'][0], hyp['history_embedder_z_prev'][0]], dim=-1), hyp['a_prev'])
+                att_c, att_w = self.att(h.unsqueeze(0), [h.size(0)], torch.cat([hyp['phone_history_embedder_z_prev'][0], hyp['history_embedder_z_prev'][0]], dim=-1), hyp['a_prev'])
                 ey = torch.cat((old_ey, att_c), dim=1)   # utt(1) x (zdim + hdim)
 
                 z_list[0] = self.decoder[0](att_c)
                 z_list[0] = self.sigmoid(z_list[0])
 
                 history_embedder_z_list[0], history_embedder_c_list[0] = self.history_embedder[0](old_ey, (hyp['history_embedder_z_prev'][0], hyp['history_embedder_c_prev'][0]))
+                phone_history_embedder_z_list[0], phone_history_embedder_c_list[0] = self.phone_history_embedder[0](ey, (hyp['phone_history_embedder_z_prev'][0], hyp['phone_history_embedder_c_prev'][0]))
                 for l in six.moves.range(1, self.dlayers):
                     history_embedder_z_list[l], history_embedder_c_list[l] = self.history_embedder[l](
                         history_embedder_z_list[l - 1], (hyp['history_embedder_z_prev'][l], hyp['history_embedder_c_prev'][l]))
+                    phone_history_embedder_z_list[l], phone_history_embedder_c_list[l] = self.phone_history_embedder[l](
+                        phone_history_embedder_z_list[l - 1], (hyp['phone_history_embedder_z_prev'][l], hyp['phone_history_embedder_c_prev'][l]))
 
                 for l in six.moves.range(1, 1 * 1 * self.dlayers):
                     z_list[l] = self.decoder[l](z_list[l - 1])
@@ -1789,21 +1821,36 @@ class Decoder(torch.nn.Module):
 
                 # get nbest local scores and their ids
                 local_att_scores = F.log_softmax(self.output(z_list[-1]))
-                lm_scores = F.log_softmax(self.output(history_embedder_z_list[-1])) - F.log_softmax(self.unigram(torch.zeros(1, 1))) # TODO(hxu)
+                print(local_att_scores.shape)
                 if rnnlm:
                     rnnlm_state, local_lm_scores = rnnlm.predict(hyp['rnnlm_prev'], vy)
                     local_scores = local_att_scores + recog_args.lm_weight * local_lm_scores
                 else:
                     local_scores = local_att_scores
 
+
+                self_lm_scores = F.log_softmax(self.output(history_embedder_z_list[-1]))
+                self_unigram_scores = F.log_softmax(self.unigram(torch.zeros(1, 1))) # TODO(hxu)
                 if lpz is not None:
                     local_best_scores, local_best_ids = torch.topk(
                         local_att_scores, ctc_beam, dim=1)
                     ctc_scores, ctc_states = ctc_prefix_score(
                         hyp['yseq'], local_best_ids[0], hyp['ctc_state_prev'])
+#                    local_scores = local_scores + self_lm_scores - self_unigram_scores   # TODO(hxu)
                     local_scores = \
                         (1.0 - ctc_weight) * local_att_scores[:, local_best_ids[0]] \
-                        + ctc_weight * torch.from_numpy(ctc_scores - hyp['ctc_score_prev']) + lm_scores
+                        + ctc_weight * torch.from_numpy(ctc_scores - hyp['ctc_score_prev']) # + lm_scores  ## TODO(hxu)
+#                    print("test: the 3 scores are,") 
+#                    print(local_scores.shape)
+#                    print(self_lm_scores.shape)
+#                    print(self_unigram_scores.shape)
+#                    print(local_scores)
+#                    print(self_lm_scores)
+#                    print(self_unigram_scores)
+
+#                    local_scores = local_scores + self_lm_scores   # TODO(hxu)
+#                    local_scores /= 3
+
                     if rnnlm:
                         local_scores += recog_args.lm_weight * local_lm_scores[:, local_best_ids[0]]
                     local_best_scores, joint_best_ids = torch.topk(local_scores, beam, dim=1)
@@ -1818,6 +1865,8 @@ class Decoder(torch.nn.Module):
                     new_hyp['c_prev'] = c_list[:]
                     new_hyp['history_embedder_z_prev'] = history_embedder_z_list[:]
                     new_hyp['history_embedder_c_prev'] = history_embedder_c_list[:]
+                    new_hyp['phone_history_embedder_z_prev'] = phone_history_embedder_z_list[:]
+                    new_hyp['phone_history_embedder_c_prev'] = phone_history_embedder_c_list[:]
                     new_hyp['a_prev'] = att_w[:]
                     new_hyp['score'] = hyp['score'] + local_best_scores[0, j]
                     new_hyp['yseq'] = [0] * (1 + len(hyp['yseq']))
@@ -1923,11 +1972,15 @@ class Decoder(torch.nn.Module):
 
         history_embedder_c_list = [self.zero_state(hs_pad)]
         history_embedder_z_list = [self.zero_state(hs_pad)]
+        phone_history_embedder_c_list = [self.zero_state(hs_pad)]
+        phone_history_embedder_z_list = [self.zero_state(hs_pad)]
         for l in six.moves.range(1, self.dlayers):
             c_list.append(self.zero_state(hs_pad))
             z_list.append(self.zero_state(hs_pad))
             history_embedder_c_list.append(self.zero_state(hs_pad))
             history_embedder_z_list.append(self.zero_state(hs_pad))
+            phone_history_embedder_c_list.append(self.zero_state(hs_pad))
+            phone_history_embedder_z_list.append(self.zero_state(hs_pad))
         att_w = None
         att_ws = []
         self.att.reset()  # reset pre-computation of h
@@ -1937,13 +1990,16 @@ class Decoder(torch.nn.Module):
 
         # loop for an output sequence
         for i in six.moves.range(olength):
-            att_c, att_w = self.att(hs_pad, hlen, torch.cat([z_list[0], history_embedder_z_list[0]], dim=-1), att_w)
+            att_c, att_w = self.att(hs_pad, hlen, torch.cat([phone_history_embedder_z_list[0], history_embedder_z_list[0]], dim=-1), att_w)
             ey = torch.cat((eys[:, i, :], att_c), dim=1)  # utt x (zdim + hdim)
             z_list[0] = self.decoder[0](att_c)
             history_embedder_z_list[0], history_embedder_c_list[0] = self.history_embedder[0](eys[:, i, :], (history_embedder_z_list[0], history_embedder_c_list[0]))
+            phone_history_embedder_z_list[0], phone_history_embedder_c_list[0] = self.phone_history_embedder[0](ey, (phone_history_embedder_z_list[0], phone_history_embedder_c_list[0]))
             for l in six.moves.range(1, self.dlayers):
                 history_embedder_z_list[l], history_embedder_c_list[l] = self.history_embedder[l](
                     history_embedder_z_list[l - 1], (history_embedder_z_list[l], history_embedder_c_list[l]))
+                phone_history_embedder_z_list[l], phone_history_embedder_c_list[l] = self.phone_history_embedder[l](
+                    phone_history_embedder_z_list[l - 1], (phone_history_embedder_z_list[l], phone_history_embedder_c_list[l]))
             for l in six.moves.range(1, 1 * 1 *self.dlayers):
                 z_list[l] = self.decoder[l](z_list[l - 1])
                 z_list[l] = self.sigmoid(z_list[l])
