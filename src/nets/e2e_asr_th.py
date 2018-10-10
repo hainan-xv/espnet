@@ -1670,10 +1670,10 @@ class Decoder(torch.nn.Module):
         self.loss = F.cross_entropy(y_all, ys_out_pad.view(-1),
                                     ignore_index=self.ignore_id,
                                     size_average=True)
-        self.rnnlm_loss = F.cross_entropy(y_all_lm, ys_out_pad.view(-1),
+        self.helper_loss = F.cross_entropy(y_all_helper, ys_out_pad.view(-1),
                                           ignore_index=self.ignore_id,
                                           size_average=True)
-        self.helper_loss = F.cross_entropy(y_all_helper, ys_out_pad.view(-1),
+        self.rnnlm_loss = F.cross_entropy(y_all_lm, ys_out_pad.view(-1),
                                           ignore_index=self.ignore_id,
                                           size_average=True)
         print("The 3 PPLs are")
@@ -1727,11 +1727,15 @@ class Decoder(torch.nn.Module):
         # initialization
         c_list = [self.zero_state(h.unsqueeze(0))]
         z_list = [self.zero_state(h.unsqueeze(0))]
+        helper_c_list = [self.zero_state(h.unsqueeze(0))]
+        helper_z_list = [self.zero_state(h.unsqueeze(0))]
         history_embedder_c_list = [self.zero_state(h.unsqueeze(0))]
         history_embedder_z_list = [self.zero_state(h.unsqueeze(0))]
         for l in six.moves.range(1, self.dlayers):
             c_list.append(self.zero_state(h.unsqueeze(0)))
             z_list.append(self.zero_state(h.unsqueeze(0)))
+            helper_c_list.append(self.zero_state(h.unsqueeze(0)))
+            helper_z_list.append(self.zero_state(h.unsqueeze(0)))
             history_embedder_c_list.append(self.zero_state(h.unsqueeze(0)))
             history_embedder_z_list.append(self.zero_state(h.unsqueeze(0)))
         a = None
@@ -1761,7 +1765,8 @@ class Decoder(torch.nn.Module):
                    'z_prev': z_list, 'a_prev': a, 'rnnlm_prev': None}
         else:
             hyp = {'score': 0.0, 'yseq': [y], 'c_prev': c_list, 'z_prev': z_list, 'a_prev': a,
-                   'history_embedder_c_prev': history_embedder_c_list, 'history_embedder_z_prev': history_embedder_z_list}
+                   'history_embedder_c_prev': history_embedder_c_list, 'history_embedder_z_prev': history_embedder_z_list,
+                   'helper_c_prev': helper_c_list, 'helper_z_prev': helper_z_list}
         if lpz is not None:
             ctc_prefix_score = CTCPrefixScore(lpz.detach().numpy(), 0, self.eos, np)
             hyp['ctc_state_prev'] = ctc_prefix_score.initial_state()
@@ -1785,16 +1790,20 @@ class Decoder(torch.nn.Module):
                 old_ey.unsqueeze(0)
                 att_c, att_w = self.att(h.unsqueeze(0), [h.size(0)], hyp['z_prev'][0], hyp['a_prev'])
                 ey = torch.cat((old_ey, att_c), dim=1)   # utt(1) x (zdim + hdim)
+                helper_z_list[0], helper_c_list[0] = self.decoder_helper[0](old_ey, (hyp['z_prev'][0], hyp['c_prev'][0]))
                 z_list[0], c_list[0] = self.decoder[0](ey, (hyp['z_prev'][0], hyp['c_prev'][0]))
                 history_embedder_z_list[0], history_embedder_c_list[0] = self.history_embedder[0](old_ey, (hyp['history_embedder_z_prev'][0], hyp['history_embedder_c_prev'][0]))
                 for l in six.moves.range(1, self.dlayers):
+                    helper_z_list[l], helper_c_list[l] = self.decoder_helper[l](
+                        helper_z_list[l - 1], (hyp['helper_z_prev'][l], hyp['helper_c_prev'][l]))
                     z_list[l], c_list[l] = self.decoder[l](
                         z_list[l - 1], (hyp['z_prev'][l], hyp['c_prev'][l]))
                     history_embedder_z_list[l], history_embedder_c_list[l] = self.history_embedder[l](
                         history_embedder_z_list[l - 1], (hyp['history_embedder_z_prev'][l], hyp['history_embedder_c_prev'][l]))
 
                 # get nbest local scores and their ids
-                local_att_scores = F.log_softmax(self.output(z_list[-1])) + F.log_softmax(self.output(history_embedder_z_list[-1]))
+                local_att_scores = F.log_softmax(self.output(z_list[-1])) # + F.log_softmax(self.output(history_embedder_z_list[-1]))  # TODO(hxu)
+                local_att_scores += F.log_softmax(self.output(helper_z_list[-1]))  # TODO(hxu)
                 if rnnlm:
                     rnnlm_state, local_lm_scores = rnnlm.predict(hyp['rnnlm_prev'], vy)
                     local_scores = local_att_scores + recog_args.lm_weight * local_lm_scores
