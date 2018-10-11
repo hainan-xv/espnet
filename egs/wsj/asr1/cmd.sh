@@ -17,4 +17,4 @@ export decode_cmd="run.pl --mem 4G"
 # JHU setup
 export train_cmd="queue.pl --mem 2G"
 export cuda_cmd="queue.pl --mem 4G --gpu 1 --config conf/gpu.conf"
-export decode_cmd="queue.pl --mem 4G"
+export decode_cmd="queue.pl --mem 4G -l hostname=b*"

@@ -1558,13 +1558,15 @@ class Decoder(torch.nn.Module):
         self.history_embedder += [torch.nn.LSTMCell(dunits, dunits)]
 
         self.ac_helper = torch.nn.ModuleList()
-        self.ac_helper += [torch.nn.LSTMCell(eprojs, dunits)]
+        self.ac_helper += [torch.nn.Linear(eprojs, dunits)]
+
+        self.sigmoid = torch.nn.Sigmoid()
 
         for l in six.moves.range(1, self.dlayers):
             self.decoder += [torch.nn.LSTMCell(dunits, dunits)]
             self.decoder_helper += [torch.nn.LSTMCell(dunits, dunits)]
             self.history_embedder += [torch.nn.LSTMCell(dunits, dunits)]
-            self.ac_helper += [torch.nn.LSTMCell(dunits, dunits)]
+            self.ac_helper += [torch.nn.Linear(dunits, dunits)]
 
         self.ignore_id = -1
         self.output = torch.nn.Linear(dunits, odim)
@@ -1659,16 +1661,16 @@ class Decoder(torch.nn.Module):
         # loop for an output sequence
         for i in six.moves.range(olength):
             att_c, att_w = self.att(hs_pad, hlens, z_list[0], att_w)
-            ey = torch.cat((eys[:, i, :], att_c.detach()), dim=1)  # utt x (zdim + hdim)
-            helper_z_list[0], helper_c_list[0] = self.decoder_helper[0](eys[:, i, :], (z_list[0].detach(), c_list[0].detach())) 
-            ac_z_list[0], ac_c_list[0] = self.ac_helper[0](att_c, (ac_z_list[0], ac_c_list[0]))
+            ey = torch.cat((eys[:, i, :], att_c), dim=1)  # utt x (zdim + hdim)
+            helper_z_list[0], helper_c_list[0] = self.decoder_helper[0](eys[:, i, :].detach(), (z_list[0].detach(), c_list[0].detach())) 
+            ac_z_list[0] = self.sigmoid(self.ac_helper[0](att_c.detach()))
             z_list[0], c_list[0] = self.decoder[0](ey, (z_list[0], c_list[0]))
-            history_embedder_z_list[0], history_embedder_c_list[0] = self.history_embedder[0](eys[:, i, :], (history_embedder_z_list[0], history_embedder_c_list[0]))
+            history_embedder_z_list[0], history_embedder_c_list[0] = self.history_embedder[0](eys[:, i, :].detach(), (history_embedder_z_list[0], history_embedder_c_list[0]))
             for l in six.moves.range(1, self.dlayers):
                 z_list[l], c_list[l] = self.decoder[l](
                     z_list[l - 1], (z_list[l], c_list[l]))
-                ac_z_list[l], ac_c_list[l] = self.ac_helper[l](
-                    ac_z_list[l - 1], (ac_z_list[l], ac_c_list[l]))
+                ac_z_list[l] = self.sigmoid(self.ac_helper[l](
+                    ac_z_list[l - 1]))
                 helper_z_list[l], helper_c_list[l] = self.decoder_helper[l](
                     helper_z_list[l - 1], (helper_z_list[l], helper_c_list[l]))
                 history_embedder_z_list[l], history_embedder_c_list[l] = self.history_embedder[l](
@@ -1752,6 +1754,8 @@ class Decoder(torch.nn.Module):
         # initialization
         c_list = [self.zero_state(h.unsqueeze(0))]
         z_list = [self.zero_state(h.unsqueeze(0))]
+        ac_c_list = [self.zero_state(h.unsqueeze(0))]
+        ac_z_list = [self.zero_state(h.unsqueeze(0))]
         helper_c_list = [self.zero_state(h.unsqueeze(0))]
         helper_z_list = [self.zero_state(h.unsqueeze(0))]
         history_embedder_c_list = [self.zero_state(h.unsqueeze(0))]
@@ -1759,12 +1763,28 @@ class Decoder(torch.nn.Module):
         for l in six.moves.range(1, self.dlayers):
             c_list.append(self.zero_state(h.unsqueeze(0)))
             z_list.append(self.zero_state(h.unsqueeze(0)))
+            ac_c_list.append(self.zero_state(h.unsqueeze(0)))
+            ac_z_list.append(self.zero_state(h.unsqueeze(0)))
             helper_c_list.append(self.zero_state(h.unsqueeze(0)))
             helper_z_list.append(self.zero_state(h.unsqueeze(0)))
             history_embedder_c_list.append(self.zero_state(h.unsqueeze(0)))
             history_embedder_z_list.append(self.zero_state(h.unsqueeze(0)))
         a = None
         self.att.reset()  # reset pre-computation of h
+
+        # READ CONSTANT VECTOR 
+#        unigram_weights = [20]
+#        with open("/export/b02/hxu/unigram.txt") as f:
+#          print ("opened file")
+#          for line in f:
+#            p = float(line.split()[0])
+#            p = -math.log(p)
+#            print (p)
+#            unigram_weights.append(p)
+#        unigram_weights.append(20)
+#
+#        U = torch.FloatTensor(unigram_weights)
+#        U = U.cuda()
 
         # search parms
         beam = recog_args.beam_size
@@ -1791,6 +1811,7 @@ class Decoder(torch.nn.Module):
         else:
             hyp = {'score': 0.0, 'yseq': [y], 'c_prev': c_list, 'z_prev': z_list, 'a_prev': a,
                    'history_embedder_c_prev': history_embedder_c_list, 'history_embedder_z_prev': history_embedder_z_list,
+                   'ac_c_prev': ac_c_list, 'ac_z_prev': ac_z_list,
                    'helper_c_prev': helper_c_list, 'helper_z_prev': helper_z_list}
         if lpz is not None:
             ctc_prefix_score = CTCPrefixScore(lpz.detach().numpy(), 0, self.eos, np)
@@ -1817,18 +1838,27 @@ class Decoder(torch.nn.Module):
                 ey = torch.cat((old_ey, att_c), dim=1)   # utt(1) x (zdim + hdim)
                 helper_z_list[0], helper_c_list[0] = self.decoder_helper[0](old_ey, (hyp['z_prev'][0], hyp['c_prev'][0]))
                 z_list[0], c_list[0] = self.decoder[0](ey, (hyp['z_prev'][0], hyp['c_prev'][0]))
+                ac_z_list[0] = self.sigmoid(self.ac_helper[0](att_c))
                 history_embedder_z_list[0], history_embedder_c_list[0] = self.history_embedder[0](old_ey, (hyp['history_embedder_z_prev'][0], hyp['history_embedder_c_prev'][0]))
                 for l in six.moves.range(1, self.dlayers):
                     helper_z_list[l], helper_c_list[l] = self.decoder_helper[l](
                         helper_z_list[l - 1], (hyp['helper_z_prev'][l], hyp['helper_c_prev'][l]))
                     z_list[l], c_list[l] = self.decoder[l](
                         z_list[l - 1], (hyp['z_prev'][l], hyp['c_prev'][l]))
+                    ac_z_list[l] = self.sigmoid(self.ac_helper[l](
+                        ac_z_list[l - 1]))
                     history_embedder_z_list[l], history_embedder_c_list[l] = self.history_embedder[l](
                         history_embedder_z_list[l - 1], (hyp['history_embedder_z_prev'][l], hyp['history_embedder_c_prev'][l]))
 
                 # get nbest local scores and their ids
                 local_att_scores = F.log_softmax(self.output(z_list[-1])) # + F.log_softmax(self.output(history_embedder_z_list[-1]))  # TODO(hxu)
-                local_att_scores += F.log_softmax(self.output(helper_z_list[-1]))  # TODO(hxu)
+                helper_scores = F.log_softmax(self.output_helper(helper_z_list[-1]))  # TODO(hxu)
+                ac_scores = F.log_softmax(self.output_ac(ac_z_list[-1]))
+                lm_scores = F.log_softmax(self.output_lm(history_embedder_z_list[-1]))
+
+#                local_att_scores += lm_scores - helper_scores #+ helper_scores + ac_scores
+#                local_att_scores = ac_scores + helper_scores - U #+ helper_scores + ac_scores
+                    
                 if rnnlm:
                     rnnlm_state, local_lm_scores = rnnlm.predict(hyp['rnnlm_prev'], vy)
                     local_scores = local_att_scores + recog_args.lm_weight * local_lm_scores
