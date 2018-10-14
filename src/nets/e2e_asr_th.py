@@ -1552,7 +1552,7 @@ class Decoder(torch.nn.Module):
         self.decoder += [torch.nn.LSTMCell(dunits + eprojs, dunits)]
 
         self.decoder_helper = torch.nn.ModuleList()
-        self.decoder_helper += [torch.nn.LSTMCell(dunits, dunits)]
+        self.decoder_helper += [torch.nn.Linear(3 * dunits, dunits)]
 
         self.history_embedder = torch.nn.ModuleList()
         self.history_embedder += [torch.nn.LSTMCell(dunits, dunits)]
@@ -1564,7 +1564,7 @@ class Decoder(torch.nn.Module):
 
         for l in six.moves.range(1, self.dlayers):
             self.decoder += [torch.nn.LSTMCell(dunits, dunits)]
-            self.decoder_helper += [torch.nn.LSTMCell(dunits, dunits)]
+            self.decoder_helper += [torch.nn.Linear(dunits, dunits)]
             self.history_embedder += [torch.nn.LSTMCell(dunits, dunits)]
             self.ac_helper += [torch.nn.Linear(dunits, dunits)]
 
@@ -1662,7 +1662,9 @@ class Decoder(torch.nn.Module):
         for i in six.moves.range(olength):
             att_c, att_w = self.att(hs_pad, hlens, z_list[0], att_w)
             ey = torch.cat((eys[:, i, :], att_c), dim=1)  # utt x (zdim + hdim)
-            helper_z_list[0], helper_c_list[0] = self.decoder_helper[0](eys[:, i, :].detach(), (z_list[0].detach(), c_list[0].detach())) 
+#            helper_z_list[0], helper_c_list[0] = self.decoder_helper[0](eys[:, i, :].detach(), (z_list[0].detach(), c_list[0].detach())) 
+            helper_z_list[0] = self.decoder_helper[0](torch.cat([eys[:, i, :], z_list[0], c_list[0]], dim=1).detach())
+            helper_z_list[0] = self.sigmoid(helper_z_list[0])
             ac_z_list[0] = self.sigmoid(self.ac_helper[0](att_c.detach()))
             z_list[0], c_list[0] = self.decoder[0](ey, (z_list[0], c_list[0]))
             history_embedder_z_list[0], history_embedder_c_list[0] = self.history_embedder[0](eys[:, i, :].detach(), (history_embedder_z_list[0], history_embedder_c_list[0]))
@@ -1671,8 +1673,7 @@ class Decoder(torch.nn.Module):
                     z_list[l - 1], (z_list[l], c_list[l]))
                 ac_z_list[l] = self.sigmoid(self.ac_helper[l](
                     ac_z_list[l - 1]))
-                helper_z_list[l], helper_c_list[l] = self.decoder_helper[l](
-                    helper_z_list[l - 1], (helper_z_list[l], helper_c_list[l]))
+                helper_z_list[l] = self.sigmoid(self.decoder_helper[l](helper_z_list[l - 1]))
                 history_embedder_z_list[l], history_embedder_c_list[l] = self.history_embedder[l](
                     history_embedder_z_list[l - 1], (history_embedder_z_list[l], history_embedder_c_list[l]))
             z_all.append(z_list[-1])
@@ -1836,13 +1837,14 @@ class Decoder(torch.nn.Module):
                 old_ey.unsqueeze(0)
                 att_c, att_w = self.att(h.unsqueeze(0), [h.size(0)], hyp['z_prev'][0], hyp['a_prev'])
                 ey = torch.cat((old_ey, att_c), dim=1)   # utt(1) x (zdim + hdim)
-                helper_z_list[0], helper_c_list[0] = self.decoder_helper[0](old_ey, (hyp['z_prev'][0], hyp['c_prev'][0]))
+                helper_z_list[0] = self.decoder_helper[0](torch.cat([old_ey, hyp['z_prev'][0], hyp['c_prev'][0]], dim=1))
+                helper_z_list[0] = self.sigmoid(helper_z_list[0])
                 z_list[0], c_list[0] = self.decoder[0](ey, (hyp['z_prev'][0], hyp['c_prev'][0]))
                 ac_z_list[0] = self.sigmoid(self.ac_helper[0](att_c))
                 history_embedder_z_list[0], history_embedder_c_list[0] = self.history_embedder[0](old_ey, (hyp['history_embedder_z_prev'][0], hyp['history_embedder_c_prev'][0]))
                 for l in six.moves.range(1, self.dlayers):
-                    helper_z_list[l], helper_c_list[l] = self.decoder_helper[l](
-                        helper_z_list[l - 1], (hyp['helper_z_prev'][l], hyp['helper_c_prev'][l]))
+                    helper_z_list[l] = self.sigmoid(self.decoder_helper[l](
+                        helper_z_list[l - 1]))
                     z_list[l], c_list[l] = self.decoder[l](
                         z_list[l - 1], (hyp['z_prev'][l], hyp['c_prev'][l]))
                     ac_z_list[l] = self.sigmoid(self.ac_helper[l](
@@ -2065,6 +2067,10 @@ class Encoder(torch.nn.Module):
             self.enc1 = BLSTMP(idim, elayers, eunits,
                                eprojs, subsample, dropout)
             logging.info('BLSTM with every-layer projection for encoder')
+        elif etype == 'lstmp':
+            self.enc1 = LSTMP(idim, elayers, eunits,
+                              eprojs, subsample, dropout)
+            logging.info('BLSTM with every-layer projection for encoder')
         elif etype == 'vggblstmp':
             self.enc1 = VGG2L(in_channel)
             self.enc2 = BLSTMP(get_vgg2l_odim(idim, in_channel=in_channel),
@@ -2095,6 +2101,8 @@ class Encoder(torch.nn.Module):
             xs_pad, ilens = self.enc1(xs_pad, ilens)
         elif self.etype == 'blstmp':
             xs_pad, ilens = self.enc1(xs_pad, ilens)
+        elif self.etype == 'lstmp':
+            xs_pad, ilens = self.enc1(xs_pad, ilens)
         elif self.etype == 'vggblstmp':
             xs_pad, ilens = self.enc1(xs_pad, ilens)
             xs_pad, ilens = self.enc2(xs_pad, ilens)
@@ -2108,6 +2116,59 @@ class Encoder(torch.nn.Module):
 
         return xs_pad, ilens
 
+class LSTMP(torch.nn.Module):
+    """unidirectional LSTM with projection layer module
+
+    :param int idim: dimension of inputs
+    :param int elayers: number of encoder layers
+    :param int cdim: number of lstm units (resulted in cdim * 2 due to biderectional)
+    :param int hdim: number of projection units
+    :param list subsample: list of subsampling numbers
+    :param float dropout: dropout rate
+    """
+
+    def __init__(self, idim, elayers, cdim, hdim, subsample, dropout):
+        super(LSTMP, self).__init__()
+        for i in six.moves.range(elayers):
+            if i == 0:
+                inputdim = idim
+            else:
+                inputdim = hdim
+            setattr(self, "lstm%d" % i, torch.nn.LSTM(inputdim, cdim, dropout=dropout,
+                                                        num_layers=1, bidirectional=False, batch_first=True))
+            # bottleneck layer to merge
+            setattr(self, "bt%d" % i, torch.nn.Linear(cdim, hdim))
+
+        self.elayers = elayers
+        self.cdim = cdim
+        self.subsample = subsample
+
+    def forward(self, xs_pad, ilens):
+        '''LSTMP forward
+
+        :param torch.Tensor xs_pad: batch of padded input sequences (B, Tmax, idim)
+        :param torch.Tensor ilens: batch of lengths of input sequences (B)
+        :return: batch of hidden state sequences (B, Tmax, hdim)
+        :rtype: torch.Tensor
+        '''
+        # logging.info(self.__class__.__name__ + ' input lengths: ' + str(ilens))
+        for layer in six.moves.range(self.elayers):
+            xs_pack = pack_padded_sequence(xs_pad, ilens, batch_first=True)
+            lstm = getattr(self, 'lstm' + str(layer))
+            lstm.flatten_parameters()
+            ys, _ = lstm(xs_pack)
+            # ys: utt list of frame x cdim x 2 (2: means bidirectional)
+            ys_pad, ilens = pad_packed_sequence(ys, batch_first=True)
+            sub = self.subsample[layer + 1]
+            if sub > 1:
+                ys_pad = ys_pad[:, ::sub]
+                ilens = [int(i + 1) // sub for i in ilens]
+            # (sum _utt frame_utt) x dim
+            projected = getattr(self, 'bt' + str(layer)
+                                )(ys_pad.contiguous().view(-1, ys_pad.size(2)))
+            xs_pad = torch.tanh(projected.view(ys_pad.size(0), ys_pad.size(1), -1))
+
+        return xs_pad, ilens  # x: utt list of frame x dim
 
 class BLSTMP(torch.nn.Module):
     """Bidirectional LSTM with projection layer module

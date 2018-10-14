@@ -22,7 +22,7 @@ do_delta=false
 
 # network archtecture
 # encoder related
-etype=blstmp     # encoder architecture type
+etype=lstmp     # encoder architecture type
 elayers=6
 eunits=320
 eprojs=320
