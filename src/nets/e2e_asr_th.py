@@ -1550,16 +1550,19 @@ class Decoder(torch.nn.Module):
         self.embed = torch.nn.Embedding(odim, dunits)
         self.decoder = torch.nn.ModuleList()
         self.decoder += [torch.nn.LSTMCell(dunits + eprojs, dunits)]
-
         self.history_embedder = torch.nn.ModuleList()
         self.history_embedder += [torch.nn.LSTMCell(dunits, dunits)]
+        self.history_embedder_word = torch.nn.ModuleList()
+        self.history_embedder_word += [torch.nn.LSTMCell(dunits, dunits)]
 
         for l in six.moves.range(1, self.dlayers):
             self.decoder += [torch.nn.LSTMCell(dunits, dunits)]
             self.history_embedder += [torch.nn.LSTMCell(dunits, dunits)]
+            self.history_embedder_word += [torch.nn.LSTMCell(dunits, dunits)]
 
         self.ignore_id = -1
-        self.output = torch.nn.Linear(dunits * 2, odim)
+        self.output = torch.nn.Linear(dunits, odim)
+#        self.output_history_embedder = torch.nn.Linear(dunits, odim)
 
         self.loss = None
         self.att = att
@@ -1617,14 +1620,20 @@ class Decoder(torch.nn.Module):
 
         history_embedder_c_list = [self.zero_state(hs_pad)]
         history_embedder_z_list = [self.zero_state(hs_pad)]
+        history_embedder_c_list_word = [self.zero_state(hs_pad)]
+        history_embedder_z_list_word = [self.zero_state(hs_pad)]
         for l in six.moves.range(1, self.dlayers):
             c_list.append(self.zero_state(hs_pad))
             z_list.append(self.zero_state(hs_pad))
 
             history_embedder_c_list.append(self.zero_state(hs_pad))
             history_embedder_z_list.append(self.zero_state(hs_pad))
+            history_embedder_c_list_word.append(self.zero_state(hs_pad))
+            history_embedder_z_list_word.append(self.zero_state(hs_pad))
         att_w = None
         z_all = []
+        z_all_history_embedder = []
+        z_all_history_embedder_word = []
         self.att.reset()  # reset pre-computation of h
 
         # pre-computation of embedding
@@ -1632,7 +1641,37 @@ class Decoder(torch.nn.Module):
 
         # loop for an output sequence
         for i in six.moves.range(olength):
+            this_word_is_space = (ys_in_pad[:,i] != 18)
+#            print (history_embedder_z_list[0].shape)
+#            print (ys_in_pad[:,i].shape)
             att_c, att_w = self.att(hs_pad, hlens, torch.cat([z_list[0], history_embedder_z_list[0]], dim=-1), att_w)
+
+#            if this_word_is_space:
+#                history_embedder_z_list_word[0], history_embedder_c_list[0] = self.history_embedder_word(history_embedder_z_list[-1], (history_embedder_z_list_word[0], history_embedder_c_list[0]))
+#                
+#                for l in six.moves.range(1, self.dlayers):
+#                    history_embedder_z_list_word[l], history_embedder_c_list_word[l] = self.history_embedder_word[l](
+#                        history_embedder_z_list_word[l - 1], (history_embedder_z_list_word[l], history_embedder_c_list_word[l]))
+#
+#                for l in six.moves.range(0, self.dlayers):
+#                    history_embedder_z_list[l] = self.zero_state(hs_pad)
+#                    history_embedder_c_list[l] = self.zero_state(hs_pad)
+#            
+          
+#            print (this_word_is_space.shape)
+            t = this_word_is_space.expand(self.dunits, batch)
+            t = t.type(torch.cuda.FloatTensor)
+#            print (t.shape)
+#            print (t)
+#            print (history_embedder_z_list[0].shape)
+#            print (history_embedder_z_list[0])
+            for l in six.moves.range(0, self.dlayers):
+                history_embedder_z_list[l] = torch.mul(history_embedder_z_list[0], torch.transpose(t, 0, 1))
+                history_embedder_c_list[l] = torch.mul(history_embedder_c_list[0], torch.transpose(t, 0, 1))
+#            print (history_embedder_z_list[0].shape)
+#            print (history_embedder_z_list[0])
+#            history_embedder_c_list[0] = this_word_is_space *  history_embedder_c_list[0]
+
             ey = torch.cat((eys[:, i, :], att_c), dim=1)  # utt x (zdim + hdim)
             z_list[0], c_list[0] = self.decoder[0](ey, (z_list[0], c_list[0]))
             history_embedder_z_list[0], history_embedder_c_list[0] = self.history_embedder[0](eys[:, i, :], (history_embedder_z_list[0], history_embedder_c_list[0]))
@@ -1641,14 +1680,31 @@ class Decoder(torch.nn.Module):
                     z_list[l - 1], (z_list[l], c_list[l]))
                 history_embedder_z_list[l], history_embedder_c_list[l] = self.history_embedder[l](
                     history_embedder_z_list[l - 1], (history_embedder_z_list[l], history_embedder_c_list[l]))
-            z_all.append(torch.cat([z_list[-1], history_embedder_z_list[-1]], dim=-1))
+            z_all.append(z_list[-1] +  history_embedder_z_list[-1])
+#            z_all.append(torch.cat([z_list[-1], history_embedder_z_list[-1].detach()], dim=-1))
+            z_all_history_embedder.append(history_embedder_z_list[-1])
 
-        z_all = torch.stack(z_all, dim=1).view(batch * olength, self.dunits * 2)
+        z_all = torch.stack(z_all, dim=1).view(batch * olength, self.dunits)
         # compute loss
         y_all = self.output(z_all)
+
+        z_all_history_embedder = torch.stack(z_all_history_embedder, dim=1).view(batch * olength, self.dunits)
+        # compute loss
+        y_all_history_embedder = self.output(z_all_history_embedder)
+
         self.loss = F.cross_entropy(y_all, ys_out_pad.view(-1),
                                     ignore_index=self.ignore_id,
                                     size_average=True)
+        self.rnnlm_loss = F.cross_entropy(y_all_history_embedder, ys_out_pad.view(-1),
+                                    ignore_index=self.ignore_id,
+                                    size_average=True)
+
+        print ("the 2 losses are:")
+        print (self.loss)
+        print ( self.rnnlm_loss)
+
+#        self.loss = self.loss + self.rnnlm_loss
+
         # -1: eos, which is removed in the loss computation
         self.loss *= (np.mean([len(x) for x in ys_in]) - 1)
         acc = th_accuracy(y_all, ys_out_pad, ignore_label=self.ignore_id)
