@@ -1555,10 +1555,14 @@ class Decoder(torch.nn.Module):
         self.history_embedder_word = torch.nn.ModuleList()
         self.history_embedder_word += [torch.nn.LSTMCell(dunits, dunits)]
 
+        self.history_embedder_word_tmp = torch.nn.ModuleList()
+        self.history_embedder_word_tmp += [torch.nn.LSTMCell(dunits, dunits)]
+
         for l in six.moves.range(1, self.dlayers):
             self.decoder += [torch.nn.LSTMCell(dunits, dunits)]
             self.history_embedder += [torch.nn.LSTMCell(dunits, dunits)]
             self.history_embedder_word += [torch.nn.LSTMCell(dunits, dunits)]
+            self.history_embedder_word_tmp += [torch.nn.LSTMCell(dunits, dunits)]
 
         self.ignore_id = -1
         self.output = torch.nn.Linear(dunits, odim)
@@ -1622,6 +1626,8 @@ class Decoder(torch.nn.Module):
         history_embedder_z_list = [self.zero_state(hs_pad)]
         history_embedder_c_list_word = [self.zero_state(hs_pad)]
         history_embedder_z_list_word = [self.zero_state(hs_pad)]
+        history_embedder_c_list_word_tmp = [self.zero_state(hs_pad)]
+        history_embedder_z_list_word_tmp = [self.zero_state(hs_pad)]
         for l in six.moves.range(1, self.dlayers):
             c_list.append(self.zero_state(hs_pad))
             z_list.append(self.zero_state(hs_pad))
@@ -1630,6 +1636,8 @@ class Decoder(torch.nn.Module):
             history_embedder_z_list.append(self.zero_state(hs_pad))
             history_embedder_c_list_word.append(self.zero_state(hs_pad))
             history_embedder_z_list_word.append(self.zero_state(hs_pad))
+            history_embedder_c_list_word_tmp.append(self.zero_state(hs_pad))
+            history_embedder_z_list_word_tmp.append(self.zero_state(hs_pad))
         att_w = None
         z_all = []
         z_all_history_embedder = []
@@ -1641,36 +1649,46 @@ class Decoder(torch.nn.Module):
 
         # loop for an output sequence
         for i in six.moves.range(olength):
-            this_word_is_space = (ys_in_pad[:,i] != 18)
-#            print (history_embedder_z_list[0].shape)
-#            print (ys_in_pad[:,i].shape)
-            att_c, att_w = self.att(hs_pad, hlens, torch.cat([z_list[0], history_embedder_z_list[0]], dim=-1), att_w)
+            this_word_is_not_space = (ys_in_pad[:,i] != 18).type(torch.cuda.FloatTensor)
 
-#            if this_word_is_space:
-#                history_embedder_z_list_word[0], history_embedder_c_list[0] = self.history_embedder_word(history_embedder_z_list[-1], (history_embedder_z_list_word[0], history_embedder_c_list[0]))
-#                
-#                for l in six.moves.range(1, self.dlayers):
-#                    history_embedder_z_list_word[l], history_embedder_c_list_word[l] = self.history_embedder_word[l](
-#                        history_embedder_z_list_word[l - 1], (history_embedder_z_list_word[l], history_embedder_c_list_word[l]))
-#
-#                for l in six.moves.range(0, self.dlayers):
-#                    history_embedder_z_list[l] = self.zero_state(hs_pad)
-#                    history_embedder_c_list[l] = self.zero_state(hs_pad)
-#            
-          
-#            print (this_word_is_space.shape)
-            t = this_word_is_space.expand(self.dunits, batch)
-            t = t.type(torch.cuda.FloatTensor)
-#            print (t.shape)
-#            print (t)
-#            print (history_embedder_z_list[0].shape)
-#            print (history_embedder_z_list[0])
+            att_c, att_w = self.att(hs_pad, hlens, torch.cat([z_list[0], history_embedder_z_list[0].detach()], dim=-1), att_w)
+#            att_c, att_w = self.att(hs_pad, hlens, torch.cat([z_list[0], history_embedder_z_list[0]], dim=-1), att_w)
+
+            t = this_word_is_not_space.expand(self.dunits, batch)
+
             for l in six.moves.range(0, self.dlayers):
                 history_embedder_z_list[l] = torch.mul(history_embedder_z_list[0], torch.transpose(t, 0, 1))
                 history_embedder_c_list[l] = torch.mul(history_embedder_c_list[0], torch.transpose(t, 0, 1))
-#            print (history_embedder_z_list[0].shape)
-#            print (history_embedder_z_list[0])
-#            history_embedder_c_list[0] = this_word_is_space *  history_embedder_c_list[0]
+
+
+#            for l in six.moves.range(0, self.dlayers):
+##                if this_word_is_not_space.sum() > batch - 0.5:
+##                    print (this_word_is_not_space.sum(), "no space")
+#
+#                if this_word_is_not_space.sum() < batch - 0.5:
+##                    print (this_word_is_not_space.sum(), "yes space")
+#
+#                    history_embedder_z_list_word_tmp[0], history_embedder_c_list_word_tmp[0] = self.history_embedder[0](history_embedder_c_list[-1],
+#                                                                                                               (history_embedder_z_list_word[0], history_embedder_c_list_word[0]))
+#                    for l in six.moves.range(1, self.dlayers):
+#                        history_embedder_z_list_word_tmp[l], history_embedder_c_list_word_tmp[l] = self.history_embedder[l](
+#                            history_embedder_z_list_word_tmp[l - 1], (history_embedder_z_list_word[l], history_embedder_c_list_word[l]))
+#
+#                    for l in six.moves.range(1, self.dlayers):
+#                        history_embedder_z_list_word_tmp[l] = history_embedder_z_list_word_tmp[l] - history_embedder_z_list_word[l]
+#                        history_embedder_c_list_word_tmp[l] = history_embedder_c_list_word_tmp[l] - history_embedder_c_list_word[l]
+#
+#                        history_embedder_z_list_word_tmp[l] = torch.mul(history_embedder_z_list_word_tmp, torch.transpose(1 - t, 0, 1))
+#                        history_embedder_c_list_word_tmp[l] = torch.mul(history_embedder_c_list_word_tmp, torch.transpose(1 - t, 0, 1))
+#                    
+#                        history_embedder_z_list_word[l] += history_embedder_z_list_word_tmp[l]
+#                        history_embedder_c_list_word[l] += history_embedder_c_list_word_tmp[l]
+                
+                    
+                    
+
+
+
 
             ey = torch.cat((eys[:, i, :], att_c), dim=1)  # utt x (zdim + hdim)
             z_list[0], c_list[0] = self.decoder[0](ey, (z_list[0], c_list[0]))
@@ -1680,9 +1698,13 @@ class Decoder(torch.nn.Module):
                     z_list[l - 1], (z_list[l], c_list[l]))
                 history_embedder_z_list[l], history_embedder_c_list[l] = self.history_embedder[l](
                     history_embedder_z_list[l - 1], (history_embedder_z_list[l], history_embedder_c_list[l]))
-            z_all.append(z_list[-1] +  history_embedder_z_list[-1])
-#            z_all.append(torch.cat([z_list[-1], history_embedder_z_list[-1].detach()], dim=-1))
+
+            z_all.append(z_list[-1] +  history_embedder_z_list[-1].detach())
+#            z_all.append(z_list[-1] +  history_embedder_z_list[-1] + history_embedder_z_list_word[-1])
+
             z_all_history_embedder.append(history_embedder_z_list[-1])
+
+            z_all_history_embedder_word.append(history_embedder_z_list_word[-1])
 
         z_all = torch.stack(z_all, dim=1).view(batch * olength, self.dunits)
         # compute loss
@@ -1699,11 +1721,11 @@ class Decoder(torch.nn.Module):
                                     ignore_index=self.ignore_id,
                                     size_average=True)
 
-        print ("the 2 losses are:")
-        print (self.loss)
-        print ( self.rnnlm_loss)
+#        print ("the 2 losses are:")
+#        print (self.loss)
+#        print (self.rnnlm_loss)
 
-#        self.loss = self.loss + self.rnnlm_loss
+        self.loss = self.loss + self.rnnlm_loss
 
         # -1: eos, which is removed in the loss computation
         self.loss *= (np.mean([len(x) for x in ys_in]) - 1)
@@ -1804,6 +1826,17 @@ class Decoder(torch.nn.Module):
             for hyp in hyps:
                 vy.unsqueeze(1)
                 vy[0] = hyp['yseq'][i]
+
+                this_word_is_not_space = (hyp['yseq'][i] != 18)
+
+                if this_word_is_not_space == False:
+#                    print("False")
+                    for i in range(0, self.dlayers):
+                        hyp['history_embedder_z_prev'][i] = self.zero_state(h.unsqueeze(0))
+                        hyp['history_embedder_c_prev'][i] = self.zero_state(h.unsqueeze(0))
+#                else:
+#                    print("True")
+
                 old_ey = self.embed(vy)           # utt list (1) x zdim
                 old_ey.unsqueeze(0)
                 att_c, att_w = self.att(h.unsqueeze(0), [h.size(0)], torch.cat([hyp['z_prev'][0], hyp['history_embedder_z_prev'][0]], dim=-1), hyp['a_prev'])
@@ -1817,7 +1850,8 @@ class Decoder(torch.nn.Module):
                         history_embedder_z_list[l - 1], (hyp['history_embedder_z_prev'][l], hyp['history_embedder_c_prev'][l]))
 
                 # get nbest local scores and their ids
-                local_att_scores = F.log_softmax(self.output(torch.cat([z_list[-1], history_embedder_z_list[-1]], dim=-1)), dim=1)
+                local_att_scores = F.log_softmax(self.output(z_list[-1] + history_embedder_z_list[-1]), dim=1)
+#                local_att_scores = F.log_softmax(self.output(torch.cat([z_list[-1], history_embedder_z_list[-1]], dim=-1)), dim=1)
                 if rnnlm:
                     rnnlm_state, local_lm_scores = rnnlm.predict(hyp['rnnlm_prev'], vy)
                     local_scores = local_att_scores + recog_args.lm_weight * local_lm_scores
